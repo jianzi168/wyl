@@ -560,6 +560,13 @@ private Set<Long> collectAffectedFormulas(Long triggerCellId) {
 
     // ===== 第1轮：初始触发点 =====
     // 查询：谁依赖触发单元格ID=1？
+    // SQL: SELECT source_formula_id FROM dag_backrefs WHERE target_cell_id = 1;
+    /*
+    查询结果：
+    source_formula_id
+    -----------------
+    1
+    */
     List<DagBackref> initialBackrefs = backrefRepo.findByTargetCellId(triggerCellId);
     // 结果：公式ID=1 (D7, 表A)
 
@@ -571,12 +578,26 @@ private Set<Long> collectAffectedFormulas(Long triggerCellId) {
     // 已访问：{1}
 
     // ===== 第2轮：处理公式ID=1 (D7) =====
-    Long currentFormulaId = formulaQueue.poll();  // 取出：1
+    currentFormulaId = formulaQueue.poll();  // 取出：1
     // 查找公式ID=1的单元格
+    // SQL: SELECT cell_id FROM formulas WHERE id = 1;
+    /*
+    查询结果：
+    cell_id
+    -------
+    5
+    */
     Cell currentCell = cellRepo.findById(formulaRepo.findById(currentFormulaId).get().getCellId()).get();
     // 当前单元格：单元格ID=5 (D7)
 
     // 查询：谁依赖单元格ID=5？
+    // SQL: SELECT source_formula_id FROM dag_backrefs WHERE target_cell_id = 5;
+    /*
+    查询结果：
+    source_formula_id
+    -----------------
+    4
+    */
     List<DagBackref> backrefs = backrefRepo.findByTargetCellId(currentCell.getId());
     // 结果：公式ID=4 (H3, 表B)
 
@@ -593,10 +614,24 @@ private Set<Long> collectAffectedFormulas(Long triggerCellId) {
     // ===== 第3轮：处理公式ID=4 (H3) =====
     currentFormulaId = formulaQueue.poll();  // 取出：4
     // 查找公式ID=4的单元格
+    // SQL: SELECT cell_id FROM formulas WHERE id = 4;
+    /*
+    查询结果：
+    cell_id
+    -------
+    8
+    */
     currentCell = cellRepo.findById(formulaRepo.findById(currentFormulaId).get().getCellId()).get();
     // 当前单元格：单元格ID=8 (H3)
 
     // 查询：谁依赖单元格ID=8？
+    // SQL: SELECT source_formula_id FROM dag_backrefs WHERE target_cell_id = 8;
+    /*
+    查询结果：
+    source_formula_id
+    -----------------
+    3
+    */
     backrefs = backrefRepo.findByTargetCellId(currentCell.getId());
     // 结果：公式ID=3 (F3, 表B)
 
@@ -613,10 +648,24 @@ private Set<Long> collectAffectedFormulas(Long triggerCellId) {
     // ===== 第4轮：处理公式ID=3 (F3) =====
     currentFormulaId = formulaQueue.poll();  // 取出：3
     // 查找公式ID=3的单元格
+    // SQL: SELECT cell_id FROM formulas WHERE id = 3;
+    /*
+    查询结果：
+    cell_id
+    -------
+    6
+    */
     currentCell = cellRepo.findById(formulaRepo.findById(currentFormulaId).get().getCellId()).get();
     // 当前单元格：单元格ID=6 (F3)
 
     // 查询：谁依赖单元格ID=6？
+    // SQL: SELECT source_formula_id FROM dag_backrefs WHERE target_cell_id = 6;
+    /*
+    查询结果：
+    source_formula_id
+    -----------------
+    5
+    */
     backrefs = backrefRepo.findByTargetCellId(currentCell.getId());
     // 结果：公式ID=5 (I7, 表C)
 
@@ -633,10 +682,22 @@ private Set<Long> collectAffectedFormulas(Long triggerCellId) {
     // ===== 第5轮：处理公式ID=5 (I7) =====
     currentFormulaId = formulaQueue.poll();  // 取出：5
     // 查找公式ID=5的单元格
+    // SQL: SELECT cell_id FROM formulas WHERE id = 5;
+    /*
+    查询结果：
+    cell_id
+    -------
+    12
+    */
     currentCell = cellRepo.findById(formulaRepo.findById(currentFormulaId).get().getCellId()).get();
     // 当前单元格：单元格ID=12 (I7)
 
     // 查询：谁依赖单元格ID=12？
+    // SQL: SELECT source_formula_id FROM dag_backrefs WHERE target_cell_id = 12;
+    /*
+    查询结果：
+    （空）
+    */
     backrefs = backrefRepo.findByTargetCellId(currentCell.getId());
     // 结果：无
 
