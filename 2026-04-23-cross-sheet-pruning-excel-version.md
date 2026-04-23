@@ -787,6 +787,551 @@ def collect_affected_formulas(trigger_cell_id):
 - **去重**：避免重复处理同一个公式
 - **非递归**：避免递归栈溢出，内存占用稳定
 
+#### 5.2.5 BFS遍历性能优化
+
+##### 5.2.5.1 问题分析
+
+**当前BFS遍历的性能问题：**
+
+当前BFS遍历过程中，每处理一个公式都要执行**2次SQL查询**：
+
+1. 查询公式所在的单元格：`SELECT cell_id FROM formulas WHERE id = ?`
+2. 查询谁依赖这个单元格：`SELECT source_formula_id FROM dag_backrefs WHERE target_cell_id = ?`
+
+**SQL查询次数分析：**
+
+```
+假设有N个受影响公式：
+- 第1轮：查询公式1的单元格 + 查询谁依赖单元格1 = 2次
+- 第2轮：查询公式4的单元格 + 查询谁依赖单元格8 = 2次
+- 第3轮：查询公式3的单元格 + 查询谁依赖单元格6 = 2次
+- 第4轮：查询公式5的单元格 + 查询谁依赖单元格12 = 2次
+- ...
+
+总查询次数 = 2N次
+
+示例：N=1000个公式 → 2000次SQL查询
+```
+
+**性能瓶颈：**
+- 网络往返：每次SQL查询都需要网络往返
+- 数据库负载：频繁查询给数据库造成压力
+- 延迟累积：2000次查询的延迟累积会很明显
+
+##### 5.2.5.2 优化方案1：批量预加载（推荐）
+
+**核心思想：**
+在BFS遍历开始前，一次性加载所有需要的数据，避免在遍历过程中频繁查询。
+
+**优化步骤：**
+
+1. **预加载公式到单元格的映射**
+2. **预加载反向索引（单元格到公式的映射）**
+3. **在内存中执行BFS遍历**
+
+**优化后的代码：**
+
+```java
+/**
+ * 收集受影响的公式（优化版：批量预加载）
+ */
+private Set<Long> collectAffectedFormulasOptimized(Long triggerCellId) {
+    Set<Long> visitedFormulaIds = new HashSet<>();
+    Queue<Long> formulaQueue = new LinkedList<>();
+
+    // ===== 优化1：初始触发点 =====
+    // 查询：谁依赖触发单元格ID=1？
+    List<DagBackref> initialBackrefs = backrefRepo.findByTargetCellId(triggerCellId);
+
+    for (DagBackref backref : initialBackrefs) {
+        formulaQueue.add(backref.getSourceFormulaId());
+        visitedFormulaIds.add(backref.getSourceFormulaId());
+    }
+
+    if (formulaQueue.isEmpty()) {
+        return visitedFormulaIds;  // 没有受影响的公式
+    }
+
+    // ===== 优化2：批量预加载公式到单元格的映射 =====
+    // SQL: SELECT id, cell_id FROM formulas WHERE id IN (1, 4, 3, 5);
+    /*
+    查询结果：
+    id | cell_id
+    ----+---------
+    1  | 5
+    4  | 8
+    3  | 6
+    5  | 12
+    */
+    Map<Long, Long> formulaIdToCellIdMap = batchLoadFormulaToCellMap(formulaQueue);
+
+    // ===== 优化3：批量预加载反向索引 =====
+    // SQL:
+    // SELECT target_cell_id, source_formula_id
+    // FROM dag_backrefs
+    // WHERE target_cell_id IN (5, 8, 6, 12);
+    /*
+    查询结果：
+    target_cell_id | source_formula_id
+    --------------+------------------
+    5             | 4
+    8             | 3
+    6             | 5
+    */
+    Map<Long, List<Long>> cellIdToFormulaIdsMap = batchLoadCellToFormulasMap(
+        new ArrayList<>(formulaIdToCellIdMap.values())
+    );
+
+    // ===== 优化4：在内存中执行BFS遍历 =====
+    while (!formulaQueue.isEmpty()) {
+        Long currentFormulaId = formulaQueue.poll();
+
+        // 从内存映射中获取单元格ID（不需要SQL查询！）
+        Long currentCellId = formulaIdToCellIdMap.get(currentFormulaId);
+        if (currentCellId == null) {
+            continue;  // 公式不存在，跳过
+        }
+
+        // 从内存映射中获取依赖的公式列表（不需要SQL查询！）
+        List<Long> dependentFormulaIds = cellIdToFormulaIdsMap.get(currentCellId);
+        if (dependentFormulaIds == null || dependentFormulaIds.isEmpty()) {
+            continue;  // 没有依赖，继续下一个
+        }
+
+        // 添加到队列（全部在内存中操作）
+        for (Long depFormulaId : dependentFormulaIds) {
+            if (!visitedFormulaIds.contains(depFormulaId)) {
+                formulaQueue.add(depFormulaId);
+                visitedFormulaIds.add(depFormulaId);
+
+                // 如果预加载的映射中没有这个公式的单元格信息，动态补充
+                if (!formulaIdToCellIdMap.containsKey(depFormulaId)) {
+                    // 动态加载单个公式（这种情况很少）
+                    Formula formula = formulaRepo.findById(depFormulaId).orElse(null);
+                    if (formula != null) {
+                        formulaIdToCellIdMap.put(depFormulaId, formula.getCellId());
+                    }
+                }
+            }
+        }
+    }
+
+    return visitedFormulaIds;
+}
+
+/**
+ * 批量加载公式到单元格的映射
+ */
+private Map<Long, Long> batchLoadFormulaToCellMap(Collection<Long> formulaIds) {
+    if (formulaIds == null || formulaIds.isEmpty()) {
+        return new HashMap<>();
+    }
+
+    // SQL: SELECT id, cell_id FROM formulas WHERE id IN (1, 4, 3, 5);
+    List<Formula> formulas = formulaRepo.findAllById(formulaIds);
+
+    return formulas.stream()
+        .collect(Collectors.toMap(
+            Formula::getId,
+            Formula::getCellId,
+            (existing, replacement) -> existing  // 如果有重复，保留第一个
+        ));
+}
+
+/**
+ * 批量加载单元格到公式的映射（反向索引）
+ */
+private Map<Long, List<Long>> batchLoadCellToFormulasMap(Collection<Long> cellIds) {
+    if (cellIds == null || cellIds.isEmpty()) {
+        return new HashMap<>();
+    }
+
+    // SQL: SELECT target_cell_id, source_formula_id FROM dag_backrefs WHERE target_cell_id IN (5, 8, 6, 12);
+    List<DagBackref> backrefs = backrefRepo.findByTargetCellIds(cellIds);
+
+    // 分组：按target_cell_id分组source_formula_id
+    return backrefs.stream()
+        .collect(Collectors.groupingBy(
+            DagBackref::getTargetCellId,
+            Collectors.mapping(
+                DagBackref::getSourceFormulaId,
+                Collectors.toList()
+            )
+        ));
+}
+```
+
+**性能对比：**
+
+| 指标 | 优化前 | 优化后 | 提升 |
+|------|-------|--------|------|
+| SQL查询次数 | 2N次 | 2次（批量）+ 少量动态加载 | **~N倍** |
+| 网络往返 | 2N次 | 2次（批量）+ 少量动态 | **~N倍** |
+| 数据库负载 | 高 | 低 | **显著降低** |
+| 内存占用 | 低 | 中等（预加载映射） | 可接受 |
+
+**示例（N=1000）：**
+
+```
+优化前：
+- SQL查询：2000次
+- 网络往返：2000次
+- 假设每次查询1ms：总耗时约2秒
+
+优化后：
+- SQL查询：2次（批量）+ 约10次动态加载 = 12次
+- 网络往返：12次
+- 假设每次查询1ms：总耗时约12ms
+
+性能提升：约167倍（2000ms → 12ms）
+```
+
+##### 5.2.5.3 优化方案2：使用JOIN批量查询
+
+**核心思想：**
+使用JOIN语句一次查询获取公式ID和依赖的公式ID，减少往返次数。
+
+**优化后的SQL：**
+
+```sql
+-- 一次查询获取所有受影响的公式ID（递归CTE，支持多级依赖）
+WITH RECURSIVE affected_formulas AS (
+    -- 初始触发点
+    SELECT
+        db.source_formula_id,
+        f.cell_id
+    FROM dag_backrefs db
+    JOIN formulas f ON db.source_formula_id = f.id
+    WHERE db.target_cell_id = 1  -- 触发单元格ID
+
+    UNION ALL
+
+    -- 递归查询依赖链
+    SELECT
+        db.source_formula_id,
+        f.cell_id
+    FROM dag_backrefs db
+    JOIN formulas f ON db.source_formula_id = f.id
+    JOIN affected_formulas af ON db.target_cell_id = af.cell_id
+    WHERE db.source_formula_id NOT IN (
+        SELECT source_formula_id FROM affected_formulas
+    )
+)
+SELECT DISTINCT source_formula_id
+FROM affected_formulas;
+
+/*
+查询结果：
+source_formula_id
+-----------------
+1
+4
+3
+5
+*/
+```
+
+**优点：**
+- **单次查询**：所有受影响的公式ID一次获取
+- **数据库内部优化**：数据库引擎可以优化递归查询
+- **代码简洁**：不需要手动维护队列和映射
+
+**缺点：**
+- **递归深度限制**：某些数据库对递归深度有限制
+- **可读性差**：递归SQL较难理解和维护
+- **灵活性差**：不如应用层BFS灵活
+
+##### 5.2.5.4 优化方案3：使用缓存
+
+**核心思想：**
+将查询结果缓存到内存（如Caffeine、Redis），避免重复查询。
+
+**优化后的代码：**
+
+```java
+public class CachedBFSExecutor {
+
+    private Cache<Long, Long> formulaIdToCellIdCache;  // 公式ID → 单元格ID
+    private Cache<Long, List<Long>> cellToFormulasCache;  // 单元格ID → 公式ID列表
+
+    /**
+     * 收集受影响的公式（使用缓存）
+     */
+    private Set<Long> collectAffectedFormulasWithCache(Long triggerCellId) {
+        Set<Long> visitedFormulaIds = new HashSet<>();
+        Queue<Long> formulaQueue = new LinkedList<>();
+
+        // 初始触发点（使用缓存）
+        List<DagBackref> initialBackrefs = getCachedBackrefs(triggerCellId);
+
+        for (DagBackref backref : initialBackrefs) {
+            formulaQueue.add(backref.getSourceFormulaId());
+            visitedFormulaIds.add(backref.getSourceFormulaId());
+        }
+
+        // BFS遍历（使用缓存）
+        while (!formulaQueue.isEmpty()) {
+            Long currentFormulaId = formulaQueue.poll();
+
+            // 从缓存获取单元格ID
+            Long currentCellId = getCachedCellId(currentFormulaId);
+            if (currentCellId == null) {
+                continue;
+            }
+
+            // 从缓存获取依赖的公式列表
+            List<Long> dependentFormulaIds = getCachedDependentFormulas(currentCellId);
+            if (dependentFormulaIds == null || dependentFormulaIds.isEmpty()) {
+                continue;
+            }
+
+            for (Long depFormulaId : dependentFormulaIds) {
+                if (!visitedFormulaIds.contains(depFormulaId)) {
+                    formulaQueue.add(depFormulaId);
+                    visitedFormulaIds.add(depFormulaId);
+                }
+            }
+        }
+
+        return visitedFormulaIds;
+    }
+
+    /**
+     * 获取缓存的单元格ID（公式ID → 单元格ID）
+     */
+    private Long getCachedCellId(Long formulaId) {
+        // 尝试从L1缓存获取
+        Long cellId = formulaIdToCellIdCache.getIfPresent(formulaId);
+        if (cellId != null) {
+            return cellId;
+        }
+
+        // 缓存未命中，查询数据库
+        Formula formula = formulaRepo.findById(formulaId).orElse(null);
+        if (formula == null) {
+            return null;
+        }
+
+        cellId = formula.getCellId();
+
+        // 写入缓存
+        formulaIdToCellIdCache.put(formulaId, cellId);
+
+        return cellId;
+    }
+
+    /**
+     * 获取缓存的依赖公式列表（单元格ID → 公式ID列表）
+     */
+    private List<Long> getCachedDependentFormulas(Long cellId) {
+        // 尝试从L1缓存获取
+        List<Long> formulaIds = cellToFormulasCache.getIfPresent(cellId);
+        if (formulaIds != null) {
+            return formulaIds;
+        }
+
+        // 缓存未命中，查询数据库
+        List<DagBackref> backrefs = backrefRepo.findByTargetCellId(cellId);
+
+        formulaIds = backrefs.stream()
+            .map(DagBackref::getSourceFormulaId)
+            .collect(Collectors.toList());
+
+        // 写入缓存
+        cellToFormulasCache.put(cellId, formulaIds);
+
+        return formulaIds;
+    }
+
+    /**
+     * 获取缓存的反向索引
+     */
+    private List<DagBackref> getCachedBackrefs(Long cellId) {
+        // 尝试从L1缓存获取
+        List<DagBackref> backrefs = cellToFormulasCache.getIfPresent(cellId);
+        if (backrefs != null) {
+            return backrefs;
+        }
+
+        // 缓存未命中，查询数据库
+        backrefs = backrefRepo.findByTargetCellId(cellId);
+
+        // 写入缓存
+        cellToFormulasCache.put(cellId, backrefs);
+
+        return backrefs;
+    }
+}
+```
+
+**缓存配置：**
+
+```java
+@Bean
+public Cache<Long, Long> formulaIdToCellIdCache() {
+    return Caffeine.newBuilder()
+        .maximumSize(10_000)  // 最多缓存10,000个公式
+        .expireAfterWrite(10, TimeUnit.MINUTES)  // 10分钟过期
+        .build();
+}
+
+@Bean
+public Cache<Long, List<Long>> cellToFormulasCache() {
+    return Caffeine.newBuilder()
+        .maximumSize(10_000)  // 最多缓存10,000个单元格
+        .expireAfterWrite(10, TimeUnit.MINUTES)  // 10分钟过期
+        .build();
+}
+```
+
+**优点：**
+- **缓存命中率高**：公式的依赖关系相对稳定，缓存命中率高
+- **显著降低数据库负载**：重复查询直接从缓存获取
+- **易于实现**：使用Caffeine等本地缓存，配置简单
+
+**缺点：**
+- **缓存一致性问题**：公式更新时需要刷新缓存
+- **内存占用**：需要额外的内存存储缓存数据
+- **首次查询慢**：第一次查询仍需访问数据库
+
+##### 5.2.5.5 优化方案对比
+
+| 方案 | SQL查询次数 | 网络往返 | 实现复杂度 | 适用场景 |
+|------|-----------|---------|-----------|---------|
+| **原始BFS** | 2N次 | 2N次 | 低 | 公式数量少（<100） |
+| **批量预加载** | 2次 + 少量动态 | 2次 + 少量动态 | 中 | 公式数量中等（100-1000） |
+| **JOIN批量查询** | 1次（递归） | 1次 | 中 | 数据库支持递归CTE |
+| **使用缓存** | N × (1 - 命中率) | N × (1 - 命中率) | 中 | 公式更新不频繁，缓存命中率高 |
+
+**推荐方案：**
+
+1. **首选：批量预加载**（方案1）
+   - 通用性强，不依赖数据库特性
+   - 性能提升显著（~N倍）
+   - 实现复杂度可控
+
+2. **备选：使用缓存**（方案3）
+   - 适合公式更新不频繁的场景
+   - 缓存命中率高时性能最好
+   - 需要处理缓存一致性问题
+
+3. **特殊场景：JOIN批量查询**（方案2）
+   - 适合数据库支持递归CTE的场景
+   - 代码简洁
+   - 不受递归深度限制的影响
+
+##### 5.2.5.6 综合优化建议
+
+**最佳实践：结合使用批量预加载 + 缓存**
+
+```java
+public class OptimizedBFSExecutor {
+
+    private Cache<Long, Long> formulaIdToCellIdCache;
+    private Cache<Long, List<Long>> cellToFormulasCache;
+
+    /**
+     * 收集受影响的公式（综合优化：批量预加载 + 缓存）
+     */
+    private Set<Long> collectAffectedFormulas(Long triggerCellId) {
+        Set<Long> visitedFormulaIds = new HashSet<>();
+        Queue<Long> formulaQueue = new LinkedList<>();
+
+        // 初始触发点
+        List<DagBackref> initialBackrefs = getCachedBackrefs(triggerCellId);
+        for (DagBackref backref : initialBackrefs) {
+            formulaQueue.add(backref.getSourceFormulaId());
+            visitedFormulaIds.add(backref.getSourceFormulaId());
+        }
+
+        if (formulaQueue.isEmpty()) {
+            return visitedFormulaIds;
+        }
+
+        // 批量预加载公式到单元格的映射（优先从缓存获取）
+        Map<Long, Long> formulaIdToCellIdMap = batchLoadWithCache(formulaQueue);
+
+        // 批量预加载反向索引（优先从缓存获取）
+        Map<Long, List<Long>> cellIdToFormulaIdsMap = batchLoadBackrefsWithCache(
+            new ArrayList<>(formulaIdToCellIdMap.values())
+        );
+
+        // 在内存中执行BFS遍历
+        while (!formulaQueue.isEmpty()) {
+            Long currentFormulaId = formulaQueue.poll();
+            Long currentCellId = formulaIdToCellIdMap.get(currentFormulaId);
+
+            if (currentCellId == null) {
+                continue;
+            }
+
+            List<Long> dependentFormulaIds = cellIdToFormulaIdsMap.get(currentCellId);
+            if (dependentFormulaIds == null || dependentFormulaIds.isEmpty()) {
+                continue;
+            }
+
+            for (Long depFormulaId : dependentFormulaIds) {
+                if (!visitedFormulaIds.contains(depFormulaId)) {
+                    formulaQueue.add(depFormulaId);
+                    visitedFormulaIds.add(depFormulaId);
+
+                    // 动态补充（如果预加载的映射中没有）
+                    if (!formulaIdToCellIdMap.containsKey(depFormulaId)) {
+                        formulaIdToCellIdMap.put(
+                            depFormulaId,
+                            getCachedCellId(depFormulaId)
+                        );
+                    }
+                }
+            }
+        }
+
+        return visitedFormulaIds;
+    }
+
+    /**
+     * 批量加载（结合缓存）
+     */
+    private Map<Long, Long> batchLoadWithCache(Collection<Long> formulaIds) {
+        // 先从缓存获取
+        Map<Long, Long> cached = new HashMap<>();
+        List<Long> uncachedIds = new ArrayList<>();
+
+        for (Long formulaId : formulaIds) {
+            Long cellId = formulaIdToCellIdCache.getIfPresent(formulaId);
+            if (cellId != null) {
+                cached.put(formulaId, cellId);
+            } else {
+                uncachedIds.add(formulaId);
+            }
+        }
+
+        // 批量查询未缓存的公式
+        if (!uncachedIds.isEmpty()) {
+            Map<Long, Long> loaded = batchLoadFormulaToCellMap(uncachedIds);
+
+            // 写入缓存
+            loaded.forEach((formulaId, cellId) ->
+                formulaIdToCellIdCache.put(formulaId, cellId)
+            );
+
+            cached.putAll(loaded);
+        }
+
+        return cached;
+    }
+
+    // ... 其他辅助方法
+}
+```
+
+**综合优化效果：**
+
+- **首次查询**：批量预加载，性能提升~N倍
+- **后续查询**：缓存命中，性能提升更显著
+- **数据库负载**：大幅降低
+- **响应时间**：显著缩短
+
 ### 5.3 剪支决策
 
 ```java
