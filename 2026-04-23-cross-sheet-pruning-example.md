@@ -811,7 +811,46 @@ PruningDecision decision5 = shouldPrune(formula5, triggerB2);
 
 剪支详情：
 - 表A.C4 ([1]_[6]): ⚡ 剪支 (不受B2影响)
+  - **剪支逻辑**：不执行公式计算，直接使用单元格的旧值
+  - **旧值来源**：cells表中的value字段
+  - **旧值**：500 (D5=200, B8=300 → C4=500)
 ```
+
+### 5.4 剪支核心原理
+
+**重要概念**：
+- **剪支** = 不执行公式计算，直接使用单元格的旧值
+- **执行** = 重新计算公式，更新单元格的值
+
+**为什么C4被剪支？**
+```
+C4 = D5 + B8
+  ├─ D5: 200 (不依赖B2)
+  └─ B8: 300 (不依赖B2)
+
+结论：C4的值不受B2影响 → 剪支
+```
+
+**剪支后的值来源**：
+```sql
+-- C4被剪支，使用cells表中的旧值
+SELECT value FROM cells WHERE pseudo_coord = '[1]_[6]';  -- C4
+-- 结果：500 (D5=200 + B8=300)
+```
+
+**D7如何使用C4的值？**
+```
+D7 = B2 + C4
+  ├─ B2: 1100 (新值，触发点）
+  └─ C4: 500 (旧值，来自cells表）
+
+结果：D7 = 1100 + 500 = 1600
+```
+
+**关键点**：
+1. C4被剪支 → 不执行计算
+2. D7需要C4的值 → 直接读取cells表
+3. cells表的C4值保持500不变
 
 ---
 
@@ -823,20 +862,80 @@ PruningDecision decision5 = shouldPrune(formula5, triggerB2);
 基于依赖关系的执行顺序：
 
 第1步：表A.C4 = D5 + B8
-- 剪支：不执行
+- ⚡ 剪支：不执行计算
+- ✓ 使用旧值：500 (来自cells表）
+- 说明：C4 = D5(200) + B8(300) = 500 (不受B2影响）
 
 第2步：表A.D7 = B2 + C4
-- 执行：D7 = 1100 (新B2) + 500 (旧C4) = 1600
+- ✓ 执行：D7 = 1100 (新B2) + 500 (旧C4) = 1600
+- 更新：UPDATE cells SET value = 1600 WHERE pseudo_coord = '[1]_[7]'
 
 第3步：表B.H3 = G9 + 表A!D7
-- 执行：H3 = 400 (G9) + 1600 (新D7) = 2000
+- ✓ 执行：H3 = 400 (G9) + 1600 (新D7) = 2000
+- 更新：UPDATE cells SET value = 2000 WHERE pseudo_coord = '[1]_[11]'
 
 第4步：表B.F3 = G4 + H3
-- 执行：F3 = 150 (G4) + 2000 (新H3) = 2150
+- ✓ 执行：F3 = 150 (G4) + 2000 (新H3) = 2150
+- 更新：UPDATE cells SET value = 2150 WHERE pseudo_coord = '[1]_[9]'
 
 第5步：表C.I7 = J8 + 表B!F3
-- 执行：I7 = 250 (J8) + 2150 (新F3) = 2400
+- ✓ 执行：I7 = 250 (J8) + 2150 (新F3) = 2400
+- 更新：UPDATE cells SET value = 2400 WHERE pseudo_coord = '[1]_[12]'
 ```
+
+### 6.2 剪支公式的值来源详解
+
+**C4剪支的值来源**：
+```sql
+-- C4被剪支，值来源：
+SELECT c.pseudo_coord, c.value, c.updated_at
+FROM cells c
+WHERE c.sheet_id = 1  -- 表A
+  AND c.pseudo_coord = '[1]_[6]';  -- C4
+
+/*
+pseudo_coord | value | updated_at
+--------------+-------+------------
+[1]_[6]      | 500   | 2026-04-22 23:00:00  ← 旧值，不更新
+*/
+```
+
+**D7计算时如何获取C4的值**：
+```java
+// D7执行时，需要C4的值
+public Object evaluateFormula(Long formulaId) {
+    // 1. 获取公式
+    Formula formula = formulaRepo.findById(formulaId);
+
+    // 2. 解析公式表达式
+    ParseResult result = parser.parse(formula.getExpression());
+    // 表达式：=[1]_[5]+[1]_[6]  (D7 = B2 + C4)
+
+    // 3. 收集依赖值
+    Map<String, Object> values = new HashMap<>();
+
+    for (String depCoord : result.getIntraDependencies()) {
+        // 4. 从cells表读取依赖值
+        Cell depCell = cellRepo.findByPseudoCoord(formula.getSheetId(), depCoord);
+
+        if (depCell != null && depCell.getValue() != null) {
+            values.put(depCoord, depCell.getValue());
+        }
+    }
+
+    // 5. 执行计算
+    double b2Value = (Double) values.get("[1]_[5]");  // 1100 (新值)
+    double c4Value = (Double) values.get("[1]_[6]");  // 500 (旧值，C4被剪支）
+
+    return b2Value + c4Value;  // 1100 + 500 = 1600
+}
+```
+
+**关键点**：
+1. 剪支的公式（C4）不执行计算
+2. 剪支公式的值来自cells表的value字段（旧值）
+3. 依赖剪支公式的公式（D7）直接读取cells表获取值
+4. cells表中C4的值在整个执行过程中保持不变
 
 ### 6.2 执行流程图
 
