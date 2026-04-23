@@ -744,6 +744,7 @@ def collect_affected_formulas(trigger_cell_id):
     queue = []               # 待处理的公式队列
 
     # 初始触发点：查找谁依赖触发单元格
+    # SQL: SELECT source_formula_id FROM dag_backrefs WHERE target_cell_id = ?;
     backrefs = query_backrefs(trigger_cell_id)
     for backref in backrefs:
         queue.append(backref.source_formula_id)
@@ -754,9 +755,11 @@ def collect_affected_formulas(trigger_cell_id):
         formula_id = queue.pop(0)  # 取出队首
 
         # 查找公式所在的单元格
+        # SQL: SELECT cell_id FROM formulas WHERE id = ?;
         cell = get_cell_by_formula_id(formula_id)
 
         # 查找谁依赖这个单元格
+        # SQL: SELECT source_formula_id FROM dag_backrefs WHERE target_cell_id = ?;
         backrefs = query_backrefs(cell.id)
 
         for backref in backrefs:
@@ -794,6 +797,13 @@ public PruningDecision shouldPrune(
     Map<Long, Double> cellValues
 ) {
     // 1. 获取公式
+    // SQL: SELECT * FROM formulas WHERE id = ?;
+    /*
+    查询结果：
+    id | cell_id | expression
+    ----+---------+------------
+    1  | 5       | =B2+C4
+    */
     Formula formula = formulaRepo.findById(formulaId).get();
 
     // 2. 解析公式表达式（Excel坐标）
@@ -847,8 +857,32 @@ private boolean isDepAffected(
     return changeRate >= CHANGE_THRESHOLD;
 }
 
+// 获取单元格值
+private Double getCellValue(Long cellId) {
+    // SQL: SELECT value FROM cells WHERE id = ?;
+    /*
+    查询结果：
+    value
+    -----
+    500
+    */
+    Cell cell = cellRepo.findById(cellId).orElse(null);
+    return cell != null && cell.getValue() != null ? cell.getValue().doubleValue() : 0.0;
+}
+
 // 通过Excel坐标获取单元格ID
 private Long getCellIdByExcelCoord(Long sheetId, String excelCoord) {
+    // SQL:
+    // SELECT c.id
+    // FROM cells c
+    // JOIN excel_to_pseudo_mapping m ON c.sheet_id = m.sheet_id AND c.pseudo_coord = m.pseudo_coord
+    // WHERE c.sheet_id = ? AND m.excel_coord = ?;
+    /*
+    查询结果：
+    id
+    --
+    1
+    */
     return cellRepo.findByExcelCoord(sheetId, excelCoord)
         .orElseThrow(() -> new CellNotFoundException("单元格不存在: " + excelCoord))
         .getId();
