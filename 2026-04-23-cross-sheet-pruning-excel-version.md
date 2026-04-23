@@ -483,8 +483,25 @@ target_sheet | target_excel_coord | source_formula_id | source_formula_excel_coo
 
 ### 5.2 收集受影响公式（使用反向索引 + 单元格ID）
 
+#### 5.2.1 收集流程概览
+
+```
+触发：表A的单元格 B2
+    ↓
+第1步：通过Excel坐标查找单元格ID
+    ↓
+第2步：通过单元格ID查询反向索引（初始触发点）
+    ↓
+第3步：BFS遍历（非递归，使用反向索引）
+    ↓
+第4步：收集所有受影响的公式ID
+```
+
+#### 5.2.2 详细步骤
+
+##### 第1步：通过Excel坐标查找单元格ID
+
 ```sql
--- 第1步：通过Excel坐标查找单元格ID
 SELECT id, pseudo_coord
 FROM cells c
 JOIN excel_to_pseudo_mapping m ON c.sheet_id = m.sheet_id AND c.pseudo_coord = m.pseudo_coord
@@ -497,7 +514,12 @@ id | pseudo_coord
 1   | [1]_[5]
 */
 
--- 第2步：通过单元格ID查询反向索引（使用单元格ID）
+结果：触发单元格ID = 1（表A的B2）
+```
+
+##### 第2步：通过单元格ID查询反向索引（初始触发点）
+
+```sql
 SELECT
     db.source_formula_id,
     f.expression,
@@ -514,44 +536,194 @@ source_formula_id | expression       | source_excel_coord
 1                | =B2+C4          | D7
 */
 
--- 第3步：BFS遍历（使用公式ID）
-受影响公式ID列表：[1] (D7)
+结果：初始受影响公式ID = [1] (表A的D7)
 ```
 
-### 5.3 BFS遍历（使用公式ID）
+##### 第3步：BFS遍历（非递归，使用反向索引）
+
+**BFS（广度优先搜索）遍历原理：**
+
+1. **使用队列**：存储待处理的公式ID
+2. **使用集合**：存储已访问的公式ID，避免重复处理
+3. **迭代处理**：从队列中取出一个公式，查找依赖该公式单元格的所有公式，添加到队列
+4. **反向索引**：通过 `dag_backrefs` 表查找"谁依赖这个单元格"
+
+**BFS遍历过程（详细）：**
+
+```java
+/**
+ * 收集受影响的公式（非递归，使用反向索引 + BFS）
+ */
+private Set<Long> collectAffectedFormulas(Long triggerCellId) {
+    Set<Long> visitedFormulaIds = new HashSet<>();  // 已访问的公式ID
+    Queue<Long> formulaQueue = new LinkedList<>();   // 待处理的公式队列
+
+    // ===== 第1轮：初始触发点 =====
+    // 查询：谁依赖触发单元格ID=1？
+    List<DagBackref> initialBackrefs = backrefRepo.findByTargetCellId(triggerCellId);
+    // 结果：公式ID=1 (D7, 表A)
+
+    for (DagBackref backref : initialBackrefs) {
+        formulaQueue.add(backref.getSourceFormulaId());
+        visitedFormulaIds.add(backref.getSourceFormulaId());
+    }
+    // 队列：[1]
+    // 已访问：{1}
+
+    // ===== 第2轮：处理公式ID=1 (D7) =====
+    Long currentFormulaId = formulaQueue.poll();  // 取出：1
+    // 查找公式ID=1的单元格
+    Cell currentCell = cellRepo.findById(formulaRepo.findById(currentFormulaId).get().getCellId()).get();
+    // 当前单元格：单元格ID=5 (D7)
+
+    // 查询：谁依赖单元格ID=5？
+    List<DagBackref> backrefs = backrefRepo.findByTargetCellId(currentCell.getId());
+    // 结果：公式ID=4 (H3, 表B)
+
+    for (DagBackref backref : backrefs) {
+        Long depFormulaId = backref.getSourceFormulaId();  // 4
+        if (!visitedFormulaIds.contains(depFormulaId)) {
+            formulaQueue.add(depFormulaId);   // 添加到队列
+            visitedFormulaIds.add(depFormulaId);  // 标记为已访问
+        }
+    }
+    // 队列：[4]
+    // 已访问：{1, 4}
+
+    // ===== 第3轮：处理公式ID=4 (H3) =====
+    currentFormulaId = formulaQueue.poll();  // 取出：4
+    // 查找公式ID=4的单元格
+    currentCell = cellRepo.findById(formulaRepo.findById(currentFormulaId).get().getCellId()).get();
+    // 当前单元格：单元格ID=8 (H3)
+
+    // 查询：谁依赖单元格ID=8？
+    backrefs = backrefRepo.findByTargetCellId(currentCell.getId());
+    // 结果：公式ID=3 (F3, 表B)
+
+    for (DagBackref backref : backrefs) {
+        Long depFormulaId = backref.getSourceFormulaId();  // 3
+        if (!visitedFormulaIds.contains(depFormulaId)) {
+            formulaQueue.add(depFormulaId);   // 添加到队列
+            visitedFormulaIds.add(depFormulaId);  // 标记为已访问
+        }
+    }
+    // 队列：[3]
+    // 已访问：{1, 4, 3}
+
+    // ===== 第4轮：处理公式ID=3 (F3) =====
+    currentFormulaId = formulaQueue.poll();  // 取出：3
+    // 查找公式ID=3的单元格
+    currentCell = cellRepo.findById(formulaRepo.findById(currentFormulaId).get().getCellId()).get();
+    // 当前单元格：单元格ID=6 (F3)
+
+    // 查询：谁依赖单元格ID=6？
+    backrefs = backrefRepo.findByTargetCellId(currentCell.getId());
+    // 结果：公式ID=5 (I7, 表C)
+
+    for (DagBackref backref : backrefs) {
+        Long depFormulaId = backref.getSourceFormulaId();  // 5
+        if (!visitedFormulaIds.contains(depFormulaId)) {
+            formulaQueue.add(depFormulaId);   // 添加到队列
+            visitedFormulaIds.add(depFormulaId);  // 标记为已访问
+        }
+    }
+    // 队列：[5]
+    // 已访问：{1, 4, 3, 5}
+
+    // ===== 第5轮：处理公式ID=5 (I7) =====
+    currentFormulaId = formulaQueue.poll();  // 取出：5
+    // 查找公式ID=5的单元格
+    currentCell = cellRepo.findById(formulaRepo.findById(currentFormulaId).get().getCellId()).get();
+    // 当前单元格：单元格ID=12 (I7)
+
+    // 查询：谁依赖单元格ID=12？
+    backrefs = backrefRepo.findByTargetCellId(currentCell.getId());
+    // 结果：无
+
+    // 队列为空，停止遍历
+    // 队列：[]
+    // 已访问：{1, 4, 3, 5}
+
+    return visitedFormulaIds;
+}
+```
+
+**BFS遍历图解：**
 
 ```
-初始队列：[公式ID=1 (D7)]
+触发单元格：表A的B2 (单元格ID=1)
+    ↓
+    └─→ 公式ID=1 (D7, 表A) ← 初始触发点
+            └─→ 公式ID=4 (H3, 表B)
+                    └─→ 公式ID=3 (F3, 表B)
+                            └─→ 公式ID=5 (I7, 表C)
+                                    └─→ 无依赖（停止）
+```
 
-第1轮：
-- 处理公式ID=1 (D7)
-- 查询反向索引：谁依赖 单元格ID=5 (D7)?
-- 结果：公式ID=4 (H3, 表B)
-- 添加到队列：[4]
+**BFS遍历关键点：**
 
-第2轮：
-- 处理公式ID=4 (H3)
-- 查询反向索引：谁依赖 单元格ID=8 (H3)?
-- 结果：公式ID=3 (F3, 表B)
-- 添加到队列：[3]
+1. **非递归**：使用队列迭代，避免递归导致的栈溢出
+2. **反向索引**：通过 `dag_backrefs` 表快速查找"谁依赖这个单元格"
+3. **去重**：使用 `visitedFormulaIds` 集合，避免重复处理同一个公式
+4. **广度优先**：按层级处理，先处理直接依赖，再处理间接依赖
 
-第3轮：
-- 处理公式ID=3 (F3)
-- 查询反向索引：谁依赖 单元格ID=6 (F3)?
-- 结果：公式ID=5 (I7, 表C)
-- 添加到队列：[5]
+##### 第4步：收集所有受影响的公式ID
 
-第4轮：
-- 处理公式ID=5 (I7)
-- 查询反向索引：谁依赖 单元格ID=12 (I7)?
-- 结果：无
-- 队列空，停止
-
-受影响公式ID：[1, 4, 3, 5]
+```
+受影响公式ID列表：[1, 4, 3, 5]
 对应Excel坐标：[D7, H3, F3, I7]
+对应表单：[表A, 表B, 表B, 表C]
 ```
 
-### 5.4 剪支决策
+#### 5.2.3 BFS遍历伪代码
+
+```python
+def collect_affected_formulas(trigger_cell_id):
+    visited = set()           # 已访问的公式ID
+    queue = []               # 待处理的公式队列
+
+    # 初始触发点：查找谁依赖触发单元格
+    backrefs = query_backrefs(trigger_cell_id)
+    for backref in backrefs:
+        queue.append(backref.source_formula_id)
+        visited.add(backref.source_formula_id)
+
+    # BFS遍历
+    while queue:
+        formula_id = queue.pop(0)  # 取出队首
+
+        # 查找公式所在的单元格
+        cell = get_cell_by_formula_id(formula_id)
+
+        # 查找谁依赖这个单元格
+        backrefs = query_backrefs(cell.id)
+
+        for backref in backrefs:
+            dep_formula_id = backref.source_formula_id
+
+            # 如果未访问过，添加到队列
+            if dep_formula_id not in visited:
+                queue.append(dep_formula_id)
+                visited.add(dep_formula_id)
+
+    return visited
+```
+
+#### 5.2.4 性能分析
+
+**时间复杂度：**
+- O(V + E)，其中 V 是公式数量，E 是依赖关系数量
+- 每个公式只访问一次，每条边只遍历一次
+
+**空间复杂度：**
+- O(V)，存储已访问的公式ID集合
+
+**性能优化：**
+- **反向索引**：`dag_backrefs` 表通过 `target_cell_id` 快速查找
+- **去重**：避免重复处理同一个公式
+- **非递归**：避免递归栈溢出，内存占用稳定
+
+### 5.3 剪支决策
 
 ```java
 // 剪支决策（使用公式ID）
@@ -622,7 +794,7 @@ private Long getCellIdByExcelCoord(Long sheetId, String excelCoord) {
 }
 ```
 
-### 5.5 剪支结果
+### 5.4 剪支结果
 
 | 公式ID | Excel坐标 | 表单 | 决策 | 原因 |
 |--------|-----------|------|------|------|
