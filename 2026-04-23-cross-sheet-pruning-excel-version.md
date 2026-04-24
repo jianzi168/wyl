@@ -866,6 +866,15 @@ private Set<Long> collectAffectedFormulasOptimized(Long triggerCellId) {
 
     // ===== 优化1：初始触发点 =====
     // 查询：谁依赖触发单元格ID=1？
+    // SQL: SELECT source_formula_id, target_cell_id, target_sheet_id
+    //      FROM dag_backrefs
+    //      WHERE target_cell_id = 1;
+    /*
+    查询结果：
+    source_formula_id | target_cell_id | target_sheet_id
+    ------------------+---------------+----------------
+    1                 | 1             | 1
+    */
     List<DagBackref> initialBackrefs = backrefRepo.findByTargetCellId(triggerCellId);
 
     for (DagBackref backref : initialBackrefs) {
@@ -1156,6 +1165,17 @@ public class CachedBFSExecutor {
         }
 
         // 缓存未命中，查询数据库
+        // SQL: SELECT source_formula_id, target_cell_id, target_sheet_id
+        //      FROM dag_backrefs
+        //      WHERE target_cell_id = ?;
+        /*
+        查询结果：
+        source_formula_id | target_cell_id | target_sheet_id
+        ------------------+---------------+----------------
+        4                 | 5             | 1
+        3                 | 8             | 1
+        5                 | 6             | 1
+        */
         List<DagBackref> backrefs = backrefRepo.findByTargetCellId(cellId);
 
         formulaIds = backrefs.stream()
@@ -1179,6 +1199,17 @@ public class CachedBFSExecutor {
         }
 
         // 缓存未命中，查询数据库
+        // SQL: SELECT source_formula_id, target_cell_id, target_sheet_id
+        //      FROM dag_backrefs
+        //      WHERE target_cell_id = ?;
+        /*
+        查询结果：
+        source_formula_id | target_cell_id | target_sheet_id
+        ------------------+---------------+----------------
+        4                 | 5             | 1
+        3                 | 8             | 1
+        5                 | 6             | 1
+        */
         backrefs = backrefRepo.findByTargetCellId(cellId);
 
         // 写入缓存
