@@ -854,7 +854,147 @@ def collect_affected_formulas(trigger_cell_id):
 2. **预加载反向索引（单元格到公式的映射）**
 3. **在内存中执行BFS遍历**
 
-**优化后的代码：**
+#### 5.2.5.2.1 参数来源说明
+
+**关键问题：SQL查询中的参数是怎么得出来的？**
+
+##### 1. triggerCellId = 1 是怎么得出来的？
+
+**来源：从Excel坐标转换而来**
+
+```
+第1步：触发单元格的Excel坐标
+- 用户触发：表A的单元格 B2
+
+第2步：通过Excel坐标查找单元格ID
+SQL: SELECT c.id, c.pseudo_coord
+    FROM cells c
+    JOIN excel_to_pseudo_mapping m ON c.sheet_id = m.sheet_id AND c.pseudo_coord = m.pseudo_coord
+    WHERE c.sheet_id = (SELECT id FROM sheets WHERE name = '表A')
+      AND m.excel_coord = 'B2';
+
+查询结果：
+id | pseudo_coord
+----+--------------
+1   | [1]_[5]
+
+结论：triggerCellId = 1
+```
+
+##### 2. 公式ID [1, 4, 3, 5] 是怎么得出来的？
+
+**来源：从initialBackrefs查询结果中提取**
+
+```
+第1步：查询谁依赖触发单元格ID=1
+SQL: SELECT source_formula_id, target_cell_id, target_sheet_id
+    FROM dag_backrefs
+    WHERE target_cell_id = 1;
+
+查询结果：
+source_formula_id | target_cell_id | target_sheet_id
+------------------+---------------+----------------
+1                 | 1             | 1
+
+第2步：从查询结果中提取source_formula_id
+List<Long> formulaIds = initialBackrefs.stream()
+    .map(DagBackref::getSourceFormulaId)
+    .collect(Collectors.toList());
+
+结果：formulaIds = [1]
+
+第3步：添加到队列和已访问集合
+for (DagBackref backref : initialBackrefs) {
+    formulaQueue.add(backref.getSourceFormulaId());  // 添加：1
+    visitedFormulaIds.add(backref.getSourceFormulaId());  // 添加：1
+}
+
+结论：公式ID列表 = [1]（初始触发点）
+
+注意：这里的[1, 4, 3, 5]是整个BFS遍历过程中所有受影响的公式ID
+      其中1是初始触发点，4, 3, 5是BFS遍历过程中发现的
+```
+
+##### 3. 单元格ID [5, 8, 6, 12] 是怎么得出来的？
+
+**来源：从批量加载的公式到单元格映射的values中提取**
+
+```
+第1步：批量预加载公式到单元格的映射
+公式ID列表（当前队列中的所有公式ID）：[1]
+
+SQL: SELECT id, cell_id FROM formulas WHERE id IN (1, 4, 3, 5);
+
+注意：这里的IN (1, 4, 3, 5)包含了：
+- 1：初始触发点
+- 4：第2轮BFS遍历发现
+- 3：第3轮BFS遍历发现
+- 5：第4轮BFS遍历发现
+
+查询结果：
+id | cell_id
+----+---------
+1  | 5
+4  | 8
+3  | 6
+5  | 12
+
+第2步：构建公式ID到单元格ID的映射
+Map<Long, Long> formulaIdToCellIdMap = {
+    1 -> 5,   // 公式ID=1 在 单元格ID=5 (D7) 上
+    4 -> 8,   // 公式ID=4 在 单元格ID=8 (H3) 上
+    3 -> 6,   // 公式ID=3 在 单元格ID=6 (F3) 上
+    5 -> 12   // 公式ID=5 在 单元格ID=12 (I7) 上
+}
+
+第3步：提取所有单元格ID
+List<Long> cellIds = new ArrayList<>(formulaIdToCellIdMap.values());
+
+结果：cellIds = [5, 8, 6, 12]
+
+结论：单元格ID列表 = [5, 8, 6, 12]
+```
+
+#### 5.2.5.2.2 完整数据流
+
+**数据流示意图：**
+
+```
+触发：表A的单元格 B2
+    ↓
+[1] Excel坐标转换单元格ID
+    ↓
+    result: triggerCellId = 1
+    ↓
+[2] 查询谁依赖单元格ID=1
+    ↓
+    result: source_formula_id = 1
+    ↓
+[3] 提取公式ID并添加到队列
+    ↓
+    result: formulaQueue = [1]
+           visited = {1}
+    ↓
+[4] 批量加载公式到单元格的映射
+    ↓
+    SQL: WHERE id IN (1, 4, 3, 5)
+    ↓
+    result: formulaIdToCellIdMap = {1->5, 4->8, 3->6, 5->12}
+    ↓
+[5] 提取所有单元格ID
+    ↓
+    result: cellIds = [5, 8, 6, 12]
+    ↓
+[6] 批量加载反向索引
+    ↓
+    SQL: WHERE target_cell_id IN (5, 8, 6, 12)
+    ↓
+    result: cellIdToFormulaIdsMap = {5->[4], 8->[3], 6->[5]}
+    ↓
+[7] 在内存中执行BFS遍历（不需要SQL！）
+```
+
+#### 5.2.5.2.3 优化后的代码
 
 ```java
 /**
@@ -865,6 +1005,7 @@ private Set<Long> collectAffectedFormulasOptimized(Long triggerCellId) {
     Queue<Long> formulaQueue = new LinkedList<>();
 
     // ===== 优化1：初始触发点 =====
+    // 参数来源：triggerCellId从Excel坐标转换而来
     // 查询：谁依赖触发单元格ID=1？
     // SQL: SELECT source_formula_id, target_cell_id, target_sheet_id
     //      FROM dag_backrefs
@@ -887,6 +1028,8 @@ private Set<Long> collectAffectedFormulasOptimized(Long triggerCellId) {
     }
 
     // ===== 优化2：批量预加载公式到单元格的映射 =====
+    // 参数来源：formulaQueue中的所有公式ID [1, 4, 3, 5]
+    // 其中1是初始触发点，4, 3, 5是BFS遍历过程中发现的
     // SQL: SELECT id, cell_id FROM formulas WHERE id IN (1, 4, 3, 5);
     /*
     查询结果：
@@ -896,10 +1039,18 @@ private Set<Long> collectAffectedFormulasOptimized(Long triggerCellId) {
     4  | 8
     3  | 6
     5  | 12
+
+    映射关系：
+    - 公式ID=1 → 单元格ID=5 (D7)
+    - 公式ID=4 → 单元格ID=8 (H3)
+    - 公式ID=3 → 单元格ID=6 (F3)
+    - 公式ID=5 → 单元格ID=12 (I7)
     */
     Map<Long, Long> formulaIdToCellIdMap = batchLoadFormulaToCellMap(formulaQueue);
 
     // ===== 优化3：批量预加载反向索引 =====
+    // 参数来源：formulaIdToCellIdMap的values [5, 8, 6, 12]
+    // 从批量加载的映射中提取所有单元格ID
     // SQL:
     // SELECT target_cell_id, source_formula_id
     // FROM dag_backrefs
@@ -911,12 +1062,81 @@ private Set<Long> collectAffectedFormulasOptimized(Long triggerCellId) {
     5             | 4
     8             | 3
     6             | 5
+
+    反向索引关系：
+    - 单元格ID=5 (D7) 被依赖 → 公式ID=4
+    - 单元格ID=8 (H3) 被依赖 → 公式ID=3
+    - 单元格ID=6 (F3) 被依赖 → 公式ID=5
     */
     Map<Long, List<Long>> cellIdToFormulaIdsMap = batchLoadCellToFormulasMap(
         new ArrayList<>(formulaIdToCellIdMap.values())
     );
 
     // ===== 优化4：在内存中执行BFS遍历 =====
+    // ===== BFS遍历过程详解（如何发现公式ID 4, 3, 5）=====
+
+    /*
+    初始状态：
+    - formulaQueue = [1]  （初始触发点）
+    - visitedFormulaIds = {1}
+    - formulaIdToCellIdMap = {1->5, 4->8, 3->6, 5->12}
+    - cellIdToFormulaIdsMap = {5->[4], 8->[3], 6->[5]}
+
+    ===== 第1轮：处理公式ID=1 =====
+    - 从队列取出：1
+    - 从映射获取单元格：5 (D7)
+    - 从映射获取依赖公式列表：[4]
+    - 添加到队列：4
+    - 更新visited：{1, 4}
+
+    公式ID 4 是如何发现的？
+    - 查询反向索引：谁依赖单元格ID=5 (D7)?
+    - 结果：公式ID=4 (H3)
+    - 公式ID=4的依赖链：H3 = G4 + 表A!D7
+
+    ===== 第2轮：处理公式ID=4 =====
+    - 从队列取出：4
+    - 从映射获取单元格：8 (H3)
+    - 从映射获取依赖公式列表：[3]
+    - 添加到队列：3
+    - 更新visited：{1, 4, 3}
+
+    公式ID 3 是如何发现的？
+    - 查询反向索引：谁依赖单元格ID=8 (H3)?
+    - 结果：公式ID=3 (F3)
+    - 公式ID=3的依赖链：F3 = G4 + H3
+
+    ===== 第3轮：处理公式ID=3 =====
+    - 从队列取出：3
+    - 从映射获取单元格：6 (F3)
+    - 从映射获取依赖公式列表：[5]
+    - 添加到队列：5
+    - 更新visited：{1, 4, 3, 5}
+
+    公式ID 5 是如何发现的？
+    - 查询反向索引：谁依赖单元格ID=6 (F3)?
+    - 结果：公式ID=5 (I7)
+    - 公式ID=5的依赖链：I7 = J8 + 表B!F3
+
+    ===== 第4轮：处理公式ID=5 =====
+    - 从队列取出：5
+    - 从映射获取单元格：12 (I7)
+    - 从映射获取依赖公式列表：[] (空）
+    - 队列为空，停止
+
+    最终结果：
+    - 受影响公式ID列表：[1, 4, 3, 5]
+    - 对应Excel坐标：[D7, H3, 3, I7]
+
+    ===== 依赖链示意图 =====
+    触发单元格：表A的B2 (单元格ID=1)
+        ↓
+        └─→ 公式ID=1 (D7, 表A) ← 初始触发点
+                └─→ 公式ID=4 (H3, 表B)
+                        └─→ 公式ID=3 (F3, 表B)
+                                └─→ 公式ID=5 (I7, 表C)
+    */
+
     while (!formulaQueue.isEmpty()) {
         Long currentFormulaId = formulaQueue.poll();
 
@@ -955,6 +1175,15 @@ private Set<Long> collectAffectedFormulasOptimized(Long triggerCellId) {
 
 /**
  * 批量加载公式到单元格的映射
+ *
+ * 参数说明：formulaIds 是从 formulaQueue 中提取的所有公式ID
+ * 包含初始触发点和BFS遍历过程中发现的所有公式
+ *
+ * 示例：formulaIds = [1, 4, 3, 5]
+ * - 1：初始触发点（从initialBackrefs中提取）
+ * - 4：BFS第2轮发现（从单元格5的反向索引中）
+ * - 3：BFS第3轮发现（从单元格8的反向索引中）
+ * - 5：BFS第4轮发现（从单元格6的反向索引中）
  */
 private Map<Long, Long> batchLoadFormulaToCellMap(Collection<Long> formulaIds) {
     if (formulaIds == null || formulaIds.isEmpty()) {
@@ -962,6 +1191,23 @@ private Map<Long, Long> batchLoadFormulaToCellMap(Collection<Long> formulaIds) {
     }
 
     // SQL: SELECT id, cell_id FROM formulas WHERE id IN (1, 4, 3, 5);
+    /*
+    参数来源：formulaIds = [1, 4, 3, 5]
+
+    查询结果：
+    id | cell_id
+    ----+---------
+    1  | 5
+    4  | 8
+    3  | 6
+    5  | 12
+
+    构建的映射：
+    - 公式ID=1 → 单元格ID=5 (D7)
+    - 公式ID=4 → 单元格ID=8 (H3)
+    - 公式ID=3 → 单元格ID=6 (F3)
+    - 公式ID=5 → 单元格ID=12 (I7)
+    */
     List<Formula> formulas = formulaRepo.findAllById(formulaIds);
 
     return formulas.stream()
@@ -974,6 +1220,14 @@ private Map<Long, Long> batchLoadFormulaToCellMap(Collection<Long> formulaIds) {
 
 /**
  * 批量加载单元格到公式的映射（反向索引）
+ *
+ * 参数说明：cellIds 是从 formulaIdToCellIdMap 的 values 中提取的所有单元格ID
+ *
+ * 示例：cellIds = [5, 8, 6, 12]
+ * - 5：公式ID=1所在的单元格 (D7)
+ * - 8：公式ID=4所在的单元格 (H3)
+ * - 6：公式ID=3所在的单元格 (F3)
+ * - 12：公式ID=5所在的单元格 (I7)
  */
 private Map<Long, List<Long>> batchLoadCellToFormulasMap(Collection<Long> cellIds) {
     if (cellIds == null || cellIds.isEmpty()) {
@@ -981,6 +1235,28 @@ private Map<Long, List<Long>> batchLoadCellToFormulasMap(Collection<Long> cellId
     }
 
     // SQL: SELECT target_cell_id, source_formula_id FROM dag_backrefs WHERE target_cell_id IN (5, 8, 6, 12);
+    /*
+    参数来源：cellIds = [5, 8, 6, 12]
+    (从 formulaIdToCellIdMap.values() 中提取)
+
+    查询结果：
+    target_cell_id | source_formula_id
+    --------------+------------------
+    5             | 4
+    8             | 3
+    6             | 5
+
+    构建的映射：
+    - 单元格ID=5 → [4] (谁依赖D7？H3)
+    - 单元格ID=8 → [3] (谁依赖H3？F3)
+    - 单元格ID=6 → [5] (谁依赖F3？I7)
+    - 单元格ID=12 → [] (谁依赖I7？无）
+
+    这个映射在BFS遍历中使用：
+    - 当处理公式ID=1时，查找单元格5的依赖 → 发现公式4
+    - 当处理公式ID=4时，查找单元格8的依赖 → 发现公式3
+    - 当处理公式ID=3时，查找单元格6的依赖 → 发现公式5
+    */
     List<DagBackref> backrefs = backrefRepo.findByTargetCellIds(cellIds);
 
     // 分组：按target_cell_id分组source_formula_id
