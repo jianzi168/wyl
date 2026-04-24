@@ -1,0 +1,35 @@
+{
+  "sessions": [
+    {
+      "sessionId": "session-3b5f9f40",
+      "name": "表单类excel功能设计",
+      "workspacePath": "/root/.openclaw/workspace/sessions/session-3b5f9f40",
+      "memoryPath": "/root/.openclaw/workspace/sessions/session-3b5f9f40/MEMORY.md",
+      "createdAt": "2026-04-23T02:44:37.826463",
+      "lastActivity": "2026-04-23T02:44:37.826472",
+      "active": true
+    },
+    {
+      "sessionId": "session-891c9ad4",
+      "name": "类excel公式方案调整",
+      "workspacePath": "/root/.openclaw/workspace/sessions/session-891c9ad4",
+      "memoryPath": "/root/.openclaw/workspace/sessions/session-891c9ad4/MEMORY.md",
+      "createdAt": "2026-04-23T04:52:14.138253",
+      "lastActivity": "2026-04-23T04:52:14.138259",
+      "active": true
+    },
+    {
+      "sessionId": "session-fef24f87",
+      "name": "公式示例调整",
+      "workspacePath": "/root/.openclaw/workspace/sessions/session-fef24f87",
+      "memoryPath": "/root/.openclaw/workspace/sessions/session-fef24f87/MEMORY.md",
+      "createdAt": "2026-04-23T07:44:08.591062",
+      "lastActivity": "2026-04-23T07:44:08.591073",
+      "active": true
+    }
+  ],
+  "metadata": {
+    "version": "1.0",
+    "lastUpdated": "2026-04-23T07:44:08.591079"
+  }
+}
