@@ -883,10 +883,11 @@ id | pseudo_coord
 
 ##### 2. 公式ID [1, 4, 3, 5] 是怎么得出来的？
 
-**来源：从initialBackrefs查询结果中提取**
+**重要澄清：**
+
+这是一个**关键问题**！initialBackrefs查询结果只有一条记录：
 
 ```
-第1步：查询谁依赖触发单元格ID=1
 SQL: SELECT source_formula_id, target_cell_id, target_sheet_id
     FROM dag_backrefs
     WHERE target_cell_id = 1;
@@ -896,26 +897,150 @@ source_formula_id | target_cell_id | target_sheet_id
 ------------------+---------------+----------------
 1                 | 1             | 1
 
-第2步：从查询结果中提取source_formula_id
-List<Long> formulaIds = initialBackrefs.stream()
-    .map(DagBackref::getSourceFormulaId)
-    .collect(Collectors.toList());
-
-结果：formulaIds = [1]
-
-第3步：添加到队列和已访问集合
-for (DagBackref backref : initialBackrefs) {
-    formulaQueue.add(backref.getSourceFormulaId());  // 添加：1
-    visitedFormulaIds.add(backref.getSourceFormulaId());  // 添加：1
-}
-
-结论：公式ID列表 = [1]（初始触发点）
-
-注意：这里的[1, 4, 3, 5]是整个BFS遍历过程中所有受影响的公式ID
-      其中1是初始触发点，4, 3, 5是BFS遍历过程中发现的
+只有一条记录：source_formula_id = 1
 ```
 
-##### 3. 单元格ID [5, 8, 6, 12] 是怎么得出来的？
+**但是！[1, 4, 3, 5]不是从initialBackrefs一次性得出的！**
+
+正确的理解是：
+
+```
+initialBackrefs查询结果：[1] ← 只有1条记录
+
+BFS遍历过程（逐步发现）：
+- 第1轮：处理公式ID=1 → 发现公式ID=4
+- 第2轮：处理公式ID=4 → 发现公式ID=3
+- 第3轮：处理公式ID=3 → 发现公式ID=5
+- 第4轮：处理公式ID=5 → 无新发现
+
+最终结果：[1, 4, 3, 5]
+```
+
+**这里存在一个矛盾：**
+
+```
+矛盾点：
+- 批量预加载方案要求：一次性批量加载所有公式ID [1, 4, 3, 5]
+- 但是：在BFS遍历开始前，我们只知道 [1]，不知道后续会发现 [4, 3, 5]
+
+问题：怎么一次性批量加载我们还未发现的公式？
+```
+
+**解决方案：**
+
+#### 方案A：混合策略（推荐）⭐
+
+**核心思想：**
+初始批量加载已知公式 + BFS遍历时动态加载新发现的公式
+
+```java
+/**
+ * 收集受影响的公式（优化版：混合策略）
+ */
+private Set<Long> collectAffectedFormulasOptimized(Long triggerCellId) {
+    Set<Long> visitedFormulaIds = new HashSet<>();
+    Queue<Long> formulaQueue = new LinkedList<>();
+
+    // ===== 第1步：初始触发点 =====
+    List<DagBackref> initialBackrefs = backrefRepo.findByTargetCellId(triggerCellId);
+
+    for (DagBackref backref : initialBackrefs) {
+        formulaQueue.add(backref.getSourceFormulaId());
+        visitedFormulaIds.add(backref.getSourceFormulaId());
+    }
+
+    if (formulaQueue.isEmpty()) {
+        return visitedFormulaIds;
+    }
+
+    // ===== 第2步：初始批量加载已知公式 =====
+    // 此时我们知道：只有公式ID=[1]
+    // SQL: SELECT id, cell_id FROM formulas WHERE id IN (1);
+    Map<Long, Long> formulaIdToCellIdMap = batchLoadFormulaToCellMap(formulaQueue);
+
+    // ===== 第3步：初始批量加载已知单元格的反向索引 =====
+    // 此时我们知道：只有单元格ID=[5]
+    // SQL: SELECT target_cell_id, source_formula_id FROM dag_backrefs WHERE target_cell_id IN (5);
+    Map<Long, List<Long>> cellIdToFormulaIdsMap = batchLoadCellToFormulasMap(
+        new ArrayList<>(formulaIdToCellIdMap.values())
+    );
+
+    // ===== 第4步：在内存中执行BFS遍历（动态补充）=====
+    while (!formulaQueue.isEmpty()) {
+        Long currentFormulaId = formulaQueue.poll();
+
+        // 从内存映射中获取单元格ID
+        Long currentCellId = formulaIdToCellIdMap.get(currentFormulaId);
+        if (currentCellId == null) {
+            // 缓存未命中，动态加载
+            Formula formula = formulaRepo.findById(currentFormulaId).orElse(null);
+            if (formula != null) {
+                currentCellId = formula.getCellId();
+                formulaIdToCellIdMap.put(currentFormulaId, currentCellId);
+            } else {
+                continue;
+            }
+        }
+
+        // 从内存映射中获取依赖的公式列表
+        List<Long> dependentFormulaIds = cellIdToFormulaIdsMap.get(currentCellId);
+        if (dependentFormulaIds == null) {
+            // 缓存未命中，动态加载
+            dependentFormulaIds = backrefRepo.findByTargetCellId(currentCellId)
+                .stream()
+                .map(DagBackref::getSourceFormulaId)
+                .collect(Collectors.toList());
+            cellIdToFormulaIdsMap.put(currentCellId, dependentFormulaIds);
+        }
+
+        // 添加到队列
+        for (Long depFormulaId : dependentFormulaIds) {
+            if (!visitedFormulaIds.contains(depFormulaId)) {
+                formulaQueue.add(depFormulaId);
+                visitedFormulaIds.add(depFormulaId);
+            }
+        }
+    }
+
+    return visitedFormulaIds;
+}
+```
+
+**混合策略的特点：**
+
+```
+第1轮：处理公式ID=1
+- 批量加载：公式ID=[1] → 单元格ID=[5]
+- 批量加载：单元格ID=[5] → 依赖公式=[4]
+- 发现新公式：4
+
+第2轮：处理公式ID=4
+- 批量加载：公式ID=[4] → 单元格ID=[8] （如果缓存未命中）
+- 批量加载：单元格ID=[8] → 依赖公式=[3] （如果缓存未命中）
+- 发现新公式：3
+
+第3轮：处理公式ID=3
+- 批量加载：公式ID=[3] → 单元格ID=[6] （如果缓存未命中）
+- 批量加载：单元格ID=[6] → 依赖公式=[5] （如果缓存未命中）
+- 发现新公式：5
+
+第4轮：处理公式ID=5
+- 批量加载：公式ID=[5] → 单元格ID=[12] （如果缓存未命中）
+- 批量加载：单元格ID=[12] → 依赖公式=[] （如果缓存未命中）
+- 队列为空，停止
+
+最终结果：[1, 4, 3, 5]
+```
+
+**性能分析：**
+
+| 指标 | 纯动态加载 | 纯批量加载 | 混合策略 |
+|------|----------|----------|---------|
+| SQL查询次数 | 2N次 | 2次 | **2次 + 少量动态** |
+| 网络往返 | 2N次 | 2次 | **2次 + 少量动态** |
+| 可行性 | ✅可行 | ❌不可行（无法预知） | ✅可行 |
+
+#### 5.2.5.2.3 完整数据流（混合策略）
 
 **来源：从批量加载的公式到单元格映射的values中提取**
 
