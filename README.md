@@ -1,162 +1,117 @@
-# Excel 公式链路 DAG 引擎
+# Cartesian Cell Builder
 
-高性能 Excel 公式引擎，支持跨表依赖追踪、DAG 构建与拓扑排序执行。
+行列分组笛卡尔积单元格组装器 - Java 高性能实现
 
-## 项目简介
+## 背景
 
-实现一个独立的公式引擎，解析类似 Excel 的公式语法，构建依赖关系 DAG，并支持跨表公式的链路追踪与执行。
+表单配置中，行和列可以分别进行分组，每组内配置多个维度及其成员，最终需要按组进行行列笛卡尔组装，生成单元格。
 
-### 核心特性
+```
+行分组:
+  R1: 维度A(a11,a12) × 维度B(b11,b12) → 4个行组合
+  R2: 维度A(a21,a22) × 维度B(b21,b22) → 4个行组合
 
-- ✅ **Excel 兼容语法**：支持 `=B3+H1+表单B!D2` 格式
-- ✅ **跨表依赖追踪**：基于反向索引的 O(1) 查找
-- ✅ **非递归算法**：BFS 遍历 + Kahn's algorithm 拓扑排序
-- ✅ **高性能设计**：内存加载 + 批量更新
-- ✅ **环路检测**：防止循环依赖导致的死循环
-- ✅ **内存优化**：惰性加载、流式执行、深度限制
+列分组:
+  C1: 维度C(c11,c12) × 维度D(d11,d12) → 4个列组合
+  C2: 维度C(c21,c22) × 维度D(d21,d22) → 4个列组合
+
+组装结果:
+  R1×C1: 4×4 = 16单元格
+  R1×C2: 4×4 = 16单元格
+  R2×C1: 4×4 = 16单元格
+  R2×C2: 4×4 = 16单元格
+  总计: 64单元格
+```
+
+## 性能优化策略
+
+| 策略 | 说明 |
+|------|------|
+| Cell只存索引 | 每个Cell只存4个int，不存rowKeys/colKeys列表 |
+| String[]替代List | DimensionGroup.members用数组，减少包装对象 |
+| 预分配容量 | ArrayList精确预分配，避免动态扩容 |
+| 迭代器模式 | 惰性计算，零物化 |
+| 回调模式 | 完全零分配，适用于100万+单元格 |
 
 ## 快速开始
 
-### 环境要求
-
-- Java 17+
-- PostgreSQL 14+
-- Spring Boot 3.x
-
-### 数据库初始化
+### 编译 & 运行
 
 ```bash
-# 执行数据库脚本
-psql -U postgres -d formula_engine -f schema.sql
+javac CartesianCellBuilder.java
+java CartesianCellBuilder
 ```
 
-### 启动项目
+### 三种 API 用法
 
-```bash
-# 克隆项目
-git clone git@github.com:jianzi168/wyl.git
-cd wyl
-
-# 构建
-mvn clean install
-
-# 运行
-mvn spring-boot:run
-```
-
-### 示例使用
+#### 1. 标准构建（10万以内）
 
 ```java
-// 创建公式
-FormulaNode formula = new FormulaNode();
-formula.setExpression("=A5+B4+表单B!D2");
-formulaEngine.addFormula(formula);
+CellResult result = CartesianCellBuilder.build(rowGroups, colGroups);
 
-// 触发执行（当B4变化时）
-formulaEngine.execute("表单C", "B4");
+// 遍历
+for (int ri = 0; ri < result.cells.size(); ri++) {
+    for (int ci = 0; ci < result.cells.get(ri).size(); ci++) {
+        for (Cell cell : result.cells.get(ri).get(ci)) {
+            String[] rowKeys = result.ctx.resolveRowKeys(cell);
+            String[] colKeys = result.ctx.resolveColKeys(cell);
+            // 处理...
+        }
+    }
+}
 ```
 
-## 架构设计
+#### 2. 迭代器模式（10万~100万）
 
-### 核心概念
-
-- **节点 (FormulaNode)**：单个单元格的公式
-- **边 (Edge)**：分两类
-  - `intra_dag_edge`：同表引用边
-  - `cross_dag_edge`：跨表引用边
-- **DAG**：有向无环图，表示公式依赖关系
-
-### 数据模型
-
-```
-sheets (表单)
-  │
-  └── formulas (公式)
-          │
-          ├── formula_intra_deps (同表依赖)
-          │
-          └── formula_cross_deps (跨表依赖)
-                  │
-                  └── cross_sheet_backrefs (反向索引)
+```java
+CellContext ctx = new CellContext(rowGroups, colGroups);
+for (Cell c : CartesianCellBuilder.iterator(rowGroups, colGroups)) {
+    String[] rowKeys = ctx.resolveRowKeys(c);
+    String[] colKeys = ctx.resolveColKeys(c);
+    // 处理...
+}
 ```
 
-### 执行流程
+#### 3. 回调模式（100万以上）
 
-```
-触发点变化
-    ↓
-收集影响公式 (BFS遍历)
-    ↓
-合并相关子 DAG
-    ↓
-拓扑排序 (Kahn's algorithm)
-    ↓
-按序求值
-    ↓
-批量更新
+```java
+CartesianCellBuilder.forEachCell(rowGroups, colGroups, cell -> {
+    // 完全零分配，极致性能
+    process(cell.rowGroupIdx, cell.colGroupIdx, 
+            cell.rowIdxInGroup, cell.colIdxInGroup);
+});
 ```
 
-## 性能优化
+## 核心数据结构
 
-| 优化点 | 方案 |
-|--------|------|
-| 避免递归 | BFS 队列遍历依赖，Kahn's algorithm 做拓扑排序 |
-| 跨表快速查找 | `cross_sheet_backrefs` 反向索引，O(1) 查找 |
-| 内存友好 | 仅加载涉及的子 DAG，不加载全量图 |
-| 批量更新 | 计算结果最后批量写回数据库 |
-| 缓存 | 公式解析结果缓存，避免重复解析 |
+### DimensionGroup
 
-## 技术栈
-
-- **语言**：Java 17+
-- **框架**：Spring Boot 3.x
-- **持久化**：Spring Data JDBC / JPA + PostgreSQL
-- **公式解析**：Antlr4 或 GraalJS
-- **构建工具**：Maven
-
-## 项目结构
-
-```
-wyl/
-├── src/
-│   ├── main/
-│   │   ├── java/
-│   │   │   └── com/formula/
-│   │   │       ├── engine/          # 核心引擎
-│   │   │       ├── model/           # 数据模型
-│   │   │       ├── repository/      # 数据访问
-│   │   │       └── service/         # 业务逻辑
-│   │   └── resources/
-│   │       ├── application.yml      # 配置文件
-│   │       └── schema.sql           # 数据库脚本
-│   └── test/
-│       └── java/                    # 单元测试
-├── docs/                            # 文档
-│   └── design.md                    # 详细设计文档
-├── README.md                        # 项目说明
-└── pom.xml                          # Maven 配置
+```java
+DimensionGroup {
+    String name;      // 维度名称，如"地区"
+    String[] members; // 成员数组，如{"北京","上海","广州"}
+}
 ```
 
-## 文档
+### Cell
 
-- [详细设计文档](2026-04-22-excel-formula-dag-design.md) - 完整的技术设计说明
+```java
+Cell {
+    int rowGroupIdx;    // 所在行组下标
+    int colGroupIdx;    // 所在列组下标
+    int rowIdxInGroup;  // 组内行序号
+    int colIdxInGroup;  // 组内列序号
+}
+```
 
-## 开发计划
+## 内存占用参考
 
-- [ ] 完善代码实现
-- [ ] 添加单元测试
-- [ ] 性能测试与优化
-- [ ] 支持 Excel 内置函数（SUM、AVERAGE、IF 等）
-- [ ] Web API 接口
+| 规模 | 推荐方案 | 内存占用 |
+|------|---------|---------|
+| <10万 | build() | ~30MB |
+| 10万~100万 | iterator() | ~10MB |
+| >100万 | forEachCell() | ~1MB |
 
-## 贡献指南
+## License
 
-欢迎提交 Issue 和 Pull Request！
-
-## 许可证
-
-MIT License
-
-## 联系方式
-
-- GitHub：@jianzi168
+MIT
