@@ -32,6 +32,21 @@ import java.util.stream.*;
  * 
  * ═══════════════════════════════════════════════════════════════════════════════
  * 
+ * 【前端渲染支持】
+ * 
+ *   前端渲染需要二维矩阵结构 `List<List<Cell>>`，使用 buildMatrix() 方法：
+ *   <pre>
+ *     MatrixCellResult result = buildMatrix(rows, cols);
+ *     // result.matrix() 返回 List<List<Cell>>
+ *     // result.get(r, c) 直接获取第 r 行第 c 列的 Cell
+ *   </pre>
+ * 
+ *   对比：
+ *   - buildMatrix():  List<List<Cell>> matrix[row][col] - 前端渲染专用
+ *   - build():        List<List<List<Cell>>> cells[ri][ci][Cell] - 后端分组处理
+ * 
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * 
  * 【JDK21 核心优化点】
  * 
  *   1. record 替代 class
@@ -58,14 +73,16 @@ import java.util.stream.*;
  * 
  * 【性能对比】
  * 
- *   ┌─────────────────────┬────────────┬───────────┬────────────────────────┐
- *   │ 方案                │ 预估耗时   │ 预估内存   │ 推荐场景               │
- *   ├─────────────────────┼────────────┼───────────┼────────────────────────┤
- *   │ build()             │ ~200-400ms │ ~280MB    │ <10万，简单直接        │
- *   │ buildParallel()     │ ~80-150ms  │ ~150MB    │ 10万~100万，并行加速   │
- *   │ buildPrimitive()    │ ~60-100ms  │ ~8MB      │ >100万，极致内存       │
- *   │ buildPrimitive+并行 │ ~30-80ms   │ ~8MB      │ >100万，最优性能       │
- *   └─────────────────────┴────────────┴───────────┴────────────────────────┘
+ *   ┌─────────────────────────┬────────────┬───────────┬────────────────────────┐
+ *   │ 方案                    │ 预估耗时   │ 预估内存  │ 推荐场景               │
+ *   ├─────────────────────────┼────────────┼───────────┼────────────────────────┤
+ *   │ buildMatrix()【前端】   │ ~200-400ms │ ~280MB   │ 前端渲染<10万         │
+ *   │ buildMatrixParallel()   │ ~100-200ms │ ~280MB   │ 前端渲染10万+         │
+ *   │ build()                 │ ~200-400ms │ ~280MB   │ <10万，简单直接        │
+ *   │ buildParallel()         │ ~80-150ms  │ ~150MB   │ 10万~100万，并行加速   │
+ *   │ buildPrimitive()        │ ~60-100ms  │ ~8MB     │ >100万，极致内存       │
+ *   │ buildPrimitive+并行     │ ~30-80ms   │ ~8MB     │ >100万，最优性能       │
+ *   └─────────────────────────┴────────────┴───────────┴────────────────────────┘
  * 
  * @author 夏雨
  * @date 2026-04-25
@@ -537,6 +554,235 @@ public class CartesianCellBuilder {
             // 二维flatten: 第 r 行 × 列数 + 第 c 列
             return cells.get(ri).get(ci).get(r * ctx.colGroupCardinalities()[ci] + c);
         }
+    }
+
+    /**
+     * ┌──────────────────────────────────────────────────────────────────────────┐
+     * │ 二维矩阵结果封装 (MatrixCellResult) - 前端渲染专用                       │
+     * └──────────────────────────────────────────────────────────────────────────┘
+     * 
+     * 【功能】
+     *   返回扁平二维矩阵结构，专为前端页面渲染设计。
+     *   matrix.get(rowGlobalIndex).get(colGlobalIndex) 直接对应页面单元格坐标。
+     * 
+     * 【结构】
+     *   - 外层 List: 按全局行号索引（0, 1, 2, ...）
+     *   - 内层 List: 该行内的所有单元格，按全局列号排列
+     * 
+     * 【示例】
+     * <pre>
+     *   MatrixCellResult result = buildMatrix(rows, cols);
+     *   
+     *   // 前端渲染：双重for循环
+     *   for (int r = 0; r < result.matrix().size(); r++) {
+     *       for (int c = 0; c < result.matrix().get(r).size(); c++) {
+     *           Cell cell = result.matrix().get(r).get(c);
+     *           // 渲染到页面 (r, c) 位置
+     *       }
+     *   }
+     *   
+     *   // 或者用增强for（更简洁）
+     *   for (List<Cell> row : result.matrix()) {
+     *       for (Cell cell : row) {
+     *           // 渲染
+     *       }
+     *   }
+     * </pre>
+     * 
+     * 【与 CellResult 的区别】
+     *   - CellResult: [rowGroup][colGroup][Cell] - 按分组组织，方便后端逻辑处理
+     *   - MatrixCellResult: [row][col] - 扁平二维矩阵，专为前端渲染设计
+     * 
+     * @param ctx     单元格上下文（可解析行列键值）
+     * @param matrix  二维矩阵 List[rowGlobal][colGlobal]
+     */
+    public record MatrixCellResult(
+        CellContext ctx,                   // 上下文
+        List<List<Cell>> matrix            // 二维矩阵 matrix[row][col]
+    ) {
+        /**
+         * 获取总行数
+         */
+        public int rowCount() { return matrix.size(); }
+        
+        /**
+         * 获取总列数
+         */
+        public int colCount() { return matrix.isEmpty() ? 0 : matrix.get(0).size(); }
+        
+        /**
+         * 按全局坐标获取单元格
+         * 
+         * @param row 全局行号（从0开始）
+         * @param col 全局列号（从0开始）
+         * @return 对应的 Cell
+         */
+        public Cell get(int row, int col) {
+            return matrix.get(row).get(col);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 方案零：二维矩阵构建（前端渲染专用）
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * ┌──────────────────────────────────────────────────────────────────────────┐
+     * │ 方法零：二维矩阵构建 buildMatrix() - 前端渲染专用                         │
+     * └──────────────────────────────────────────────────────────────────────────┘
+     * 
+     * 【功能】
+     *   返回扁平二维矩阵 List<List<Cell>>，专为企业级前端渲染设计。
+     *   这是前端页面渲染的【标准数据格式】。
+     * 
+     * 【数据结构】
+     *   matrix[row][col] = Cell
+     *   - row: 全局行号（0 到 totalRows-1）
+     *   - col: 全局列号（0 到 totalCols-1）
+     * 
+     * 【适用场景】
+     *   - 前端页面渲染（Angular/Vue/React）
+     *   - Excel/表格导出
+     *   - 任何需要二维坐标访问的场景
+     * 
+     * 【使用示例】
+     * <pre>
+     *   // 1. 构建矩阵
+     *   MatrixCellResult result = buildMatrix(rowGroups, colGroups);
+     *   
+     *   // 2. 前端渲染（双重循环）
+     *   for (int r = 0; r < result.rowCount(); r++) {
+     *       for (int c = 0; c < result.colCount(); c++) {
+     *           Cell cell = result.get(r, c);
+     *           String[] rowKeys = result.ctx().resolveRowKeys(cell);
+     *           String[] colKeys = result.ctx().resolveColKeys(cell);
+     *           // 渲染到页面 (r, c) 位置
+     *       }
+     *   }
+     * </pre>
+     * 
+     * 【内存说明】
+     *   与 build() 相同的内存占用，因为都是物化所有 Cell 对象。
+     *   区别仅在于组织结构不同。
+     * 
+     * @param rows 行分组配置
+     * @param cols 列分组配置
+     * @return 二维矩阵结果封装
+     */
+    public static MatrixCellResult buildMatrix(List<List<DimensionGroup>> rows,
+                                               List<List<DimensionGroup>> cols) {
+        CellContext ctx = CellContext.of(rows, cols);
+        
+        int totalRows = ctx.totalRows();   // 所有行组合的总和
+        int totalCols = ctx.totalCols();   // 所有列组合的总和
+        
+        // 创建二维矩阵（预分配每一行）
+        List<List<Cell>> matrix = new ArrayList<>(totalRows);
+        for (int r = 0; r < totalRows; r++) {
+            // 每行预分配 totalCols 个 Cell 引用
+            matrix.add(new ArrayList<>(totalCols));
+        }
+        
+        // 填充矩阵
+        // 遍历每个 (rowGroupIdx, colGroupIdx) 组合
+        for (int ri = 0; ri < ctx.rowGroups().length; ri++) {
+            // 计算此行组的起始全局行号
+            int rowStart = 0;
+            for (int i = 0; i < ri; i++) {
+                rowStart += ctx.rowGroupCardinalities()[i];
+            }
+            int rowCard = ctx.rowGroupCardinalities()[ri];  // 此行组的行组合数
+            
+            for (int ci = 0; ci < ctx.colGroups().length; ci++) {
+                // 计算此列组的起始全局列号
+                int colStart = 0;
+                for (int j = 0; j < ci; j++) {
+                    colStart += ctx.colGroupCardinalities()[j];
+                }
+                int colCard = ctx.colGroupCardinalities()[ci];  // 此列组的列组合数
+                
+                // 笛卡尔积填充
+                // 每个行组合 × 每个列组合 = 一个单元格
+                for (int r = 0; r < rowCard; r++) {
+                    int globalRow = rowStart + r;  // 全局行号
+                    List<Cell> targetRow = matrix.get(globalRow);
+                    
+                    for (int c = 0; c < colCard; c++) {
+                        int globalCol = colStart + c;  // 全局列号
+                        targetRow.add(new Cell(ri, ci, r, c));
+                    }
+                }
+            }
+        }
+        
+        return new MatrixCellResult(ctx, matrix);
+    }
+
+    /**
+     * ┌──────────────────────────────────────────────────────────────────────────┐
+     * │ 方法零-并行：二维矩阵并行构建 buildMatrixParallel()                        │
+     * └──────────────────────────────────────────────────────────────────────────┘
+     * 
+     * 【功能】
+     *   并行版本的二维矩阵构建，利用多核 CPU 加速。
+     * 
+     * 【并行策略】
+     *   - 按行分组并行：不同行组可以并行填充
+     *   - 同一行组内的列填充存在写入竞争，需要同步
+     * 
+     * 【性能】
+     *   vs buildMatrix(): 约 2-3 倍提速（取决于行组数量和 CPU 核心数）
+     * 
+     * @param rows 行分组配置
+     * @param cols 列分组配置
+     * @return 二维矩阵结果
+     */
+    public static MatrixCellResult buildMatrixParallel(List<List<DimensionGroup>> rows,
+                                                       List<List<DimensionGroup>> cols) {
+        CellContext ctx = CellContext.of(rows, cols);
+        
+        int totalRows = ctx.totalRows();
+        int totalCols = ctx.totalCols();
+        
+        // 创建二维矩阵
+        List<List<Cell>> matrix = new ArrayList<>(totalRows);
+        for (int r = 0; r < totalRows; r++) {
+            matrix.add(new ArrayList<>(totalCols));
+        }
+        
+        // 并行填充（按行组并行，每个行组独立填充）
+        IntStream.range(0, ctx.rowGroups().length)
+            .parallel()
+            .forEach(ri -> {
+                // 计算起始行号
+                int rowStart = 0;
+                for (int i = 0; i < ri; i++) {
+                    rowStart += ctx.rowGroupCardinalities()[i];
+                }
+                int rowCard = ctx.rowGroupCardinalities()[ri];
+                
+                for (int ci = 0; ci < ctx.colGroups().length; ci++) {
+                    int colStart = 0;
+                    for (int j = 0; j < ci; j++) {
+                        colStart += ctx.colGroupCardinalities()[j];
+                    }
+                    int colCard = ctx.colGroupCardinalities()[ci];
+                    
+                    // 填充此 (ri, ci) 块
+                    for (int r = 0; r < rowCard; r++) {
+                        int globalRow = rowStart + r;
+                        List<Cell> targetRow = matrix.get(globalRow);
+                        
+                        synchronized (targetRow) {  // 同步保护同行的并发写入
+                            for (int c = 0; c < colCard; c++) {
+                                targetRow.add(new Cell(ri, ci, r, c));
+                            }
+                        }
+                    }
+                }
+            });
+        
+        return new MatrixCellResult(ctx, matrix);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1118,11 +1364,30 @@ public class CartesianCellBuilder {
         
         System.out.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         
-        // ─── 方案1: 标准构建 ───
-        System.out.println("【方案1】build() - 标准构建");
+        // ─── 方案0: 二维矩阵构建（前端渲染专用）───
+        System.out.println("【方案0】buildMatrix() - 二维矩阵构建（前端渲染专用）");
         long start = System.nanoTime();
-        CellResult r1 = build(rowGroups, colGroups);
+        MatrixCellResult r0 = buildMatrix(rowGroups, colGroups);
         long elapsed = System.nanoTime() - start;
+        System.out.printf("  耗时: %.2f ms%n", elapsed / 1_000_000.0);
+        System.out.printf("  矩阵规模: %d行 × %d列%n", r0.rowCount(), r0.colCount());
+        System.out.printf("  matrix[0][0] = %s%n", r0.get(0, 0));
+        System.out.printf("  matrix[4][5] = %s%n", r0.get(4, 5));  // R2C2 块的第0个
+        
+        // ─── 方案0-并行: 二维矩阵并行构建 ───
+        System.out.println();
+        System.out.println("【方案0-并行】buildMatrixParallel() - 二维矩阵并行构建");
+        start = System.nanoTime();
+        MatrixCellResult r0p = buildMatrixParallel(rowGroups, colGroups);
+        elapsed = System.nanoTime() - start;
+        System.out.printf("  耗时: %.2f ms%n", elapsed / 1_000_000.0);
+        
+        // ─── 方案1: 标准构建 ───
+        System.out.println();
+        System.out.println("【方案1】build() - 标准构建");
+        start = System.nanoTime();
+        CellResult r1 = build(rowGroups, colGroups);
+        elapsed = System.nanoTime() - start;
         System.out.printf("  耗时: %.2f ms%n", elapsed / 1_000_000.0);
         System.out.printf("  首个Cell: %s%n", r1.at(0, 0, 0, 0));
         
@@ -1172,16 +1437,19 @@ public class CartesianCellBuilder {
         System.out.println("【大规模估算】100万单元格");
         System.out.println("  基于代码逻辑的理论推演（实际需要 JDK 环境运行）:");
         System.out.println();
-        System.out.println("  ┌──────────────────────┬────────────┬─────────────┬────────────────┐");
-        System.out.println("  │ 方案                 │ 预估耗时   │ 预估内存     │ 推荐度         │");
-        System.out.println("  ├──────────────────────┼────────────┼─────────────┼────────────────┤");
-        System.out.println("  │ build()             │ ~200-400ms │ ~280MB      │ ⭐⭐ (有GC问题) │");
-        System.out.println("  │ buildParallel()     │ ~80-150ms  │ ~150MB      │ ⭐⭐⭐          │");
-        System.out.println("  │ buildPrimitive()    │ ~60-100ms  │ ~8MB        │ ⭐⭐⭐⭐         │");
-        System.out.println("  │ buildPrimitive+并行 │ ~30-80ms   │ ~8MB        │ ⭐⭐⭐⭐⭐ (最优)│");
-        System.out.println("  └──────────────────────┴────────────┴─────────────┴────────────────┘");
+        System.out.println("  ┌──────────────────────────┬────────────┬─────────────┬────────────────────┐");
+        System.out.println("  │ 方案                    │ 预估耗时   │ 预估内存     │ 推荐场景           │");
+        System.out.println("  ├──────────────────────────┼────────────┼─────────────┼────────────────────┤");
+        System.out.println("  │ buildMatrix()【前端】   │ ~200-400ms │ ~280MB      │ 前端渲染<10万     │");
+        System.out.println("  │ buildMatrixParallel()   │ ~100-200ms │ ~280MB      │ 前端渲染10万+     │");
+        System.out.println("  │ build()                 │ ~200-400ms │ ~280MB      │ <10万，简单直接    │");
+        System.out.println("  │ buildParallel()         │ ~80-150ms  │ ~150MB      │ 10万~100万        │");
+        System.out.println("  │ buildPrimitive()        │ ~60-100ms  │ ~8MB        │ >100万，极致内存   │");
+        System.out.println("  │ buildPrimitiveParallel  │ ~30-80ms   │ ~8MB        │ >100万，最优性能   │");
+        System.out.println("  └──────────────────────────┴────────────┴─────────────┴────────────────────┘");
         System.out.println();
-        System.out.println("  ★ JDK21 推荐: buildPrimitiveParallel() 或 buildPrimitive()");
+        System.out.println("  ★ 前端渲染场景: buildMatrix() 或 buildMatrixParallel()");
+        System.out.println("  ★ 后端处理场景: buildPrimitiveParallel() (极致性能)");
         System.out.println();
         
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1190,9 +1458,37 @@ public class CartesianCellBuilder {
         System.out.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
         System.out.println("【API 使用示例】");
         System.out.println();
-        System.out.println("  // ───────────────────────────────────────────────────────────────");
-        System.out.println("  // 方式1: 标准构建（简单直接）");
-        System.out.println("  // ───────────────────────────────────────────────────────────────");
+        System.out.println("  // ═══════════════════════════════════════════════════════════════════════");
+        System.out.println("  // 方式A: 二维矩阵构建（前端渲染标准方式）");
+        System.out.println("  // ═══════════════════════════════════════════════════════════════════════");
+        System.out.println("  MatrixCellResult matrix = buildMatrix(rowGroups, colGroups);");
+        System.out.println("  ");
+        System.out.println("  // 前端渲染（标准双重循环）");
+        System.out.println("  for (int r = 0; r < matrix.rowCount(); r++) {");
+        System.out.println("      for (int c = 0; c < matrix.colCount(); c++) {");
+        System.out.println("          Cell cell = matrix.get(r, c);");
+        System.out.println("          String[] rowKeys = matrix.ctx().resolveRowKeys(cell);");
+        System.out.println("          String[] colKeys = matrix.ctx().resolveColKeys(cell);");
+        System.out.println("          // 渲染到页面 (r, c) 位置");
+        System.out.println("      }");
+        System.out.println("  }");
+        System.out.println("  ");
+        System.out.println("  // 或者用增强for（更简洁）");
+        System.out.println("  for (List<Cell> row : matrix.matrix()) {");
+        System.out.println("      for (Cell cell : row) {");
+        System.out.println("          // 渲染");
+        System.out.println("      }");
+        System.out.println("  }");
+        System.out.println();
+        System.out.println("  // ═══════════════════════════════════════════════════════════════════════");
+        System.out.println("  // 方式B: 二维矩阵并行构建（大规模前端渲染）");
+        System.out.println("  // ═══════════════════════════════════════════════════════════════════════");
+        System.out.println("  MatrixCellResult matrix2 = buildMatrixParallel(rowGroups, colGroups);");
+        System.out.println("  // 使用方式同上");
+        System.out.println();
+        System.out.println("  // ═══════════════════════════════════════════════════════════════════════");
+        System.out.println("  // 方式C: 标准构建（后端分组处理）");
+        System.out.println("  // ═══════════════════════════════════════════════════════════════════════");
         System.out.println("  var result = build(rowGroups, colGroups);");
         System.out.println("  ");
         System.out.println("  // 随机访问");
@@ -1202,9 +1498,9 @@ public class CartesianCellBuilder {
         System.out.println("  var rowKeys = result.ctx().resolveRowKeys(cell);");
         System.out.println("  var colKeys = result.ctx().resolveColKeys(cell);");
         System.out.println();
-        System.out.println("  // ───────────────────────────────────────────────────────────────");
-        System.out.println("  // 方式2: Primitive 构建（极致性能）");
-        System.out.println("  // ───────────────────────────────────────────────────────────────");
+        System.out.println("  // ═══════════════════════════════════════════════════════════════════════");
+        System.out.println("  // 方式D: Primitive 构建（极致性能）");
+        System.out.println("  // ═══════════════════════════════════════════════════════════════════════");
         System.out.println("  var primitive = buildPrimitive(rowGroups, colGroups);");
         System.out.println("  ");
         System.out.println("  // 顺序遍历");
@@ -1213,9 +1509,9 @@ public class CartesianCellBuilder {
         System.out.println("      // 处理 c.rowGroupIdx(), c.colGroupIdx()...");
         System.out.println("  });");
         System.out.println();
-        System.out.println("  // ───────────────────────────────────────────────────────────────");
-        System.out.println("  // 方式3: Stream 流水线（函数式）");
-        System.out.println("  // ───────────────────────────────────────────────────────────────");
+        System.out.println("  // ═══════════════════════════════════════════════════════════════════════");
+        System.out.println("  // 方式E: Stream 流水线（函数式）");
+        System.out.println("  // ═══════════════════════════════════════════════════════════════════════");
         System.out.println("  var ctx = CellContext.of(rowGroups, colGroups);");
         System.out.println("  ");
         System.out.println("  parallelStreamCells(rowGroups, colGroups)");
