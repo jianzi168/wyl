@@ -26,31 +26,58 @@ import java.util.Map;
 public final class FormulaTopologicalSortExample {
 
     /**
-     * 组装示例 {@code formulaIdMap}，调用拓扑排序，将「入参 / 出参」打印到标准输出。
+     * 入口：构造演示依赖图，打印排序入参/出参。
      *
      * @param args 未使用
      */
     public static void main(String[] args) {
-        // key = 待求公式 ID；value = 必须先算完的公式 ID 列表（空列表表示无公式依赖）
-        Map<Long, List<Long>> formulaIdToPrerequisiteFormulaIds = new HashMap<>();
+        Map<Long, List<Long>> formulaIdToPrerequisiteFormulaIds = buildDemoFormulaMap();
+        printHeader();
+        printInputMap(formulaIdToPrerequisiteFormulaIds);
+        List<List<Long>> executionOrderGroupedByWeakComponent =
+                FormulaTopologicalSort.sort(formulaIdToPrerequisiteFormulaIds);
+        printExecutionResult(executionOrderGroupedByWeakComponent);
+        printFooter();
+    }
 
-        // ----- 子图 A：线性依赖链（模拟逐级汇总） -----
-        formulaIdToPrerequisiteFormulaIds.put(1L, List.of());
-        formulaIdToPrerequisiteFormulaIds.put(2L, List.of(1L));
-        formulaIdToPrerequisiteFormulaIds.put(3L, List.of(2L));
+    /** 组装含链、独立链、菱形三类结构的示例 {@link Map}。 */
+    private static Map<Long, List<Long>> buildDemoFormulaMap() {
+        Map<Long, List<Long>> m = new HashMap<>();
+        addLinearChainDemo(m);
+        addDisjointChainDemo(m);
+        addDiamondDemo(m);
+        return m;
+    }
 
-        // ----- 子图 B：与 A 无任何无向连接，故为另一弱连通分量 -----
-        formulaIdToPrerequisiteFormulaIds.put(100L, List.of());
-        formulaIdToPrerequisiteFormulaIds.put(101L, List.of(100L));
+    /** 子图 A：1→2→3 线性链。 */
+    private static void addLinearChainDemo(Map<Long, List<Long>> m) {
+        m.put(1L, List.of());
+        m.put(2L, List.of(1L));
+        m.put(3L, List.of(2L));
+    }
 
-        // ----- 子图 C：菱形 DAG（公共底 + 分叉 + 汇聚） -----
-        formulaIdToPrerequisiteFormulaIds.put(10L, List.of());
-        formulaIdToPrerequisiteFormulaIds.put(11L, List.of(10L));
-        formulaIdToPrerequisiteFormulaIds.put(12L, List.of(10L));
-        formulaIdToPrerequisiteFormulaIds.put(13L, List.of(11L, 12L));
+    /** 子图 B：100→101，与 A 无向不连通，将落入外层 List 的另一元素。 */
+    private static void addDisjointChainDemo(Map<Long, List<Long>> m) {
+        m.put(100L, List.of());
+        m.put(101L, List.of(100L));
+    }
 
+    /** 子图 C：菱形 DAG（10 为底，11/12 并行，13 汇聚）。 */
+    private static void addDiamondDemo(Map<Long, List<Long>> m) {
+        m.put(10L, List.of());
+        m.put(11L, List.of(10L));
+        m.put(12L, List.of(10L));
+        m.put(13L, List.of(11L, 12L));
+    }
+
+    /** 打印示例标题与入参说明行。 */
+    private static void printHeader() {
         System.out.println("========== 拓扑排序示例 ==========");
         System.out.println("【入参】formulaIdMap（key=公式ID, value=该公式直接依赖的公式ID列表）:");
+    }
+
+    /** 按公式 ID 升序打印 map 条目。 */
+    private static void printInputMap(Map<Long, List<Long>> formulaIdToPrerequisiteFormulaIds) {
         formulaIdToPrerequisiteFormulaIds.entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())
                 .forEach(
@@ -58,16 +85,14 @@ public final class FormulaTopologicalSortExample {
                                 System.out.println(
                                         "  " + entry.getKey() + " -> " + entry.getValue()));
         System.out.println();
+    }
 
-        // 出参：外层每个 List 对应一个弱连通分量；内层为「叶子→根」的某一合法拓扑序
-        List<List<Long>> executionOrderGroupedByWeakComponent =
-                FormulaTopologicalSort.sort(formulaIdToPrerequisiteFormulaIds);
-
+    /** 逐行打印各弱连通分量及完整 {@code List<List<Long>>}。 */
+    private static void printExecutionResult(List<List<Long>> executionOrderGroupedByWeakComponent) {
         System.out.println(
                 "【出参】List<List<Long>>（外层=弱连通子图，按分量最小公式ID排序；内层=子图内 叶子→根）:");
-        for (int componentIndex = 0;
-                componentIndex < executionOrderGroupedByWeakComponent.size();
-                componentIndex++) {
+        int n = executionOrderGroupedByWeakComponent.size();
+        for (int componentIndex = 0; componentIndex < n; componentIndex++) {
             System.out.println(
                     "  子图["
                             + componentIndex
@@ -75,6 +100,10 @@ public final class FormulaTopologicalSortExample {
                             + executionOrderGroupedByWeakComponent.get(componentIndex));
         }
         System.out.println("  完整结构: " + executionOrderGroupedByWeakComponent);
+    }
+
+    /** 打印底部分隔线。 */
+    private static void printFooter() {
         System.out.println("==================================");
     }
 

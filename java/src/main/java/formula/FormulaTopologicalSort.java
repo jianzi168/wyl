@@ -65,106 +65,31 @@ public final class FormulaTopologicalSort {
     /**
      * 对整张公式依赖图做拓扑排序，并按弱连通分量拆分结果。
      *
-     * <p>执行流程与 {@linkplain FormulaTopologicalSort 类注释} 中「算法概要」一致：先收集顶点 → 并查集划分子图
-     * → 按分量最小 ID 排序分量 → 对每个分量单独 Kahn。
+     * <p>实现步骤与 {@linkplain FormulaTopologicalSort 类注释} 中「算法概要」一致：收集顶点全集 → 无向并查集合并
+     * 「当前公式—前置」边以划分弱连通分量 → 按各分量最小公式 ID 对分量排序 → 在每个分量上有向建边并做 Kahn。
      *
-     * @param formulaIdMap 公式 ID → 该公式直接依赖的公式 ID 列表；{@code null} 或空则返回空列表
-     * @return 不可变或新构建的列表；外层每个内层列表是一条弱连通分量上的「叶子 → 根」执行顺序
-     * @throws IllegalStateException 任一弱连通分量上存在有向环（含自环），无法拓扑排序时
+     * @param formulaIdMap 公式 ID → 该公式直接依赖的公式 ID 列表；{@code null} 或空则返回 {@link List#of()}
+     * @return 外层 List 每个元素对应一个弱连通分量；内层 List 为该分量上的「叶子 → 根」拓扑序
+     * @throws IllegalStateException 任一弱连通分量上存在有向环（含自环）时
      */
     public static List<List<Long>> sort(Map<Long, List<Long>> formulaIdMap) {
-        // ---------- 边界：无输入则无顶点 ----------
         if (formulaIdMap == null || formulaIdMap.isEmpty()) {
             return List.of();
         }
-
-        // ---------- 步骤 1：收集顶点全集 ----------
-        // 原因：依赖里可能引用未在 key 集合中出现的公式（仅作为被引用方），也必须参与排序与分量划分。
-        // 预估容量取 max(16, 2*entry数)：一条公式常见「若干依赖」，顶点数通常大于 entry 数但不会无限大。
-        int estimatedNodeCount = Math.max(16, formulaIdMap.size() * 2);
-        HashSet<Long> allFormulaIds = HashSet.newHashSet(estimatedNodeCount);
-        for (Map.Entry<Long, List<Long>> formulaEntry : formulaIdMap.entrySet()) {
-            Long formulaId = formulaEntry.getKey();
-            if (formulaId != null) {
-                allFormulaIds.add(formulaId);
-            }
-            List<Long> prerequisiteFormulaIds = formulaEntry.getValue();
-            if (prerequisiteFormulaIds != null) {
-                for (Long prerequisiteId : prerequisiteFormulaIds) {
-                    if (prerequisiteId != null) {
-                        allFormulaIds.add(prerequisiteId);
-                    }
-                }
-            }
-        }
-
-        // ---------- 步骤 2：无向并查集，得到弱连通分量 ----------
-        // 对每条「当前公式 — 其某一前置」在无向意义上连边：二者必属同一弱连通分量（可互相通过无向路径到达）。
-        // 注意：这里用的是无向合并；有向边（谁先算）留在步骤 4 的 Kahn 里处理。
-        WeaklyConnectedComponents unionFind = new WeaklyConnectedComponents(allFormulaIds.size());
-        // 确保仅出现在「别人依赖列表」里的孤立 ID 也有单元素集合，后续分组不会丢顶点。
-        for (Long formulaId : allFormulaIds) {
-            unionFind.findRepresentative(formulaId);
-        }
-        for (Map.Entry<Long, List<Long>> formulaEntry : formulaIdMap.entrySet()) {
-            Long dependentFormulaId = formulaEntry.getKey();
-            if (dependentFormulaId == null) {
-                // key 为 null 的条目不参与构图（无法作为「当前公式」标识）
-                continue;
-            }
-            List<Long> prerequisiteFormulaIds = formulaEntry.getValue();
-            if (prerequisiteFormulaIds == null || prerequisiteFormulaIds.isEmpty()) {
-                continue;
-            }
-            for (Long prerequisiteFormulaId : prerequisiteFormulaIds) {
-                if (prerequisiteFormulaId == null) {
-                    continue;
-                }
-                unionFind.union(
-                        dependentFormulaId.longValue(), prerequisiteFormulaId.longValue());
-            }
-        }
-
-        // ---------- 步骤 3：按代表元把公式分桶，并记录「桶内最小公式 ID」用于稳定排序 ----------
-        // formulaIdsByComponentRoot：key = 并查集当前代表元（任意 ID），value = 该分量中所有公式 ID。
-        // smallestFormulaIdInComponent：与上面 key 对齐，存该分量里最小的公式 ID（用于外层 List 的顺序，与「按最小 ID 代表分量」语义一致）。
-        HashMap<Long, ArrayList<Long>> formulaIdsByComponentRoot =
-                HashMap.newHashMap(allFormulaIds.size());
-        HashMap<Long, Long> smallestFormulaIdInComponent = HashMap.newHashMap(allFormulaIds.size());
-        for (Long formulaId : allFormulaIds) {
-            long componentRepresentative = unionFind.findRepresentative(formulaId);
-            formulaIdsByComponentRoot
-                    .computeIfAbsent(componentRepresentative, k -> new ArrayList<>(8))
-                    .add(formulaId);
-            smallestFormulaIdInComponent.merge(componentRepresentative, formulaId, Math::min);
-        }
-
-        // 将各分量的代表元排成一行：比较键是「该分量最小公式 ID」，而不是并查集内部根是谁（根会随 union 变化）。
-        ArrayList<Long> componentRootsOrderedByMinFormulaId =
-                new ArrayList<>(formulaIdsByComponentRoot.keySet());
-        componentRootsOrderedByMinFormulaId.sort(
-                Comparator.comparingLong(smallestFormulaIdInComponent::get));
-
-        // ---------- 步骤 4：对每个弱连通分量单独做 Kahn，结果依次追加到外层 List ----------
-        ArrayList<List<Long>> executionOrderPerWeakComponent =
-                new ArrayList<>(componentRootsOrderedByMinFormulaId.size());
-        for (Long componentRoot : componentRootsOrderedByMinFormulaId) {
-            ArrayList<Long> formulaIdsInThisComponent =
-                    formulaIdsByComponentRoot.get(componentRoot);
-            executionOrderPerWeakComponent.add(
-                    topologicalSortSingleWeakComponent(formulaIdMap, formulaIdsInThisComponent));
-        }
-        return executionOrderPerWeakComponent;
+        HashSet<Long> allFormulaIds = collectVertices(formulaIdMap);
+        WeaklyConnectedComponents unionFind = unionFindFromMap(formulaIdMap, allFormulaIds);
+        ComponentBuckets buckets = bucketFormulasByRepresentative(allFormulaIds, unionFind);
+        List<Long> rootsOrdered = orderRootsBySmallestFormulaId(buckets);
+        return sortEachWeakComponent(formulaIdMap, buckets, rootsOrdered);
     }
 
     /**
-     * 与 {@link #sort(Map)} 相同计算逻辑，但不向调用方抛出「存在环」异常。
+     * 与 {@link #sort(Map)} 相同逻辑；若存在环则返回 {@code null} 而不抛异常。
      *
-     * <p>适用场景：编排前希望先探测是否 DAG；返回 {@code null} 表示整张图（某一分量）上无法拓扑排序。
-     * 注意：此处仅捕获 {@link IllegalStateException}，其它运行时异常仍会向上抛出。
+     * <p>仅吞掉 {@link IllegalStateException}；其它运行时异常仍会向上抛出。
      *
      * @param formulaIdMap 同 {@link #sort(Map)}
-     * @return 与 {@link #sort(Map)} 相同结构的结果；若存在环则 {@code null}
+     * @return 与 {@link #sort(Map)} 相同结构；无法拓扑排序（含环）时为 {@code null}
      */
     public static List<List<Long>> trySort(Map<Long, List<Long>> formulaIdMap) {
         try {
@@ -175,181 +100,337 @@ public final class FormulaTopologicalSort {
     }
 
     /**
-     * 在<strong>单个弱连通分量</strong>上执行 Kahn 算法，得到一条合法的线性拓扑序。
-     *
-     * <p><strong>图模型</strong>
-     *
-     * <ul>
-     *   <li>顶点：{@code formulaIdsInWeakComponent} 中的每个公式 ID。
-     *   <li>有向边：对每个 map 条目「当前公式 f → 依赖列表中的 p」，若 f 与 p 均属于本分量，则加边 <strong>p → f</strong>（先算 p，再算 f）。
-     *   <li>入度：指向顶点 f 的边数 = f 还有多少<strong>尚未排在前面的</strong>直接前置；初始入度由边表统计得到。
-     * </ul>
-     *
-     * <p><strong>Kahn 过程</strong>
-     *
-     * <ol>
-     *   <li>将所有入度为 0 的顶点下标放入队列（这些公式没有未满足的直接前置，可立即执行）。
-     *   <li>反复取出队首顶点 u，将 u 对应的公式 ID 追加到结果序列末尾。
-     *   <li>对 u 的每条出边 u→v（v 依赖 u 已算完），将 v 的入度减 1；若 v 入度变为 0，将 v 入队。
-     *   <li>若最终结果长度 &lt; 顶点数，说明残留子图入度均非 0，即存在有向环。
-     * </ol>
-     *
-     * <p><strong>为何做「公式 ID → 下标」映射</strong>：公式 ID 为稀疏 Long，用稠密下标可把入度、队列存成 {@code int[]}，
-     * 避免大量 {@code Integer} 与频繁哈希在热路径上带来的开销。
-     *
-     * @param formulaIdMap 全图依赖；本方法只读取「当前公式属于本分量」的条目，并只建两端都在本分量内的边
-     * @param formulaIdsInWeakComponent 本分量的顶点集合（来自并查集分桶，顺序任意，不影响拓扑合法性）
-     * @return 本分量的一个拓扑序（叶子在前，依赖链末端在后）
-     * @throws IllegalStateException 本分量子图上存在有向环时
+     * 从 map 的 key 与 value 中收集所有非 null 的公式 ID，得到顶点全集（含仅出现在依赖列表中的 ID）。
      */
-    private static List<Long> topologicalSortSingleWeakComponent(
-            Map<Long, List<Long>> formulaIdMap, ArrayList<Long> formulaIdsInWeakComponent) {
-        final int vertexCount = formulaIdsInWeakComponent.size();
-        if (vertexCount == 0) {
-            return List.of();
-        }
-
-        // --- 稠密编号：Long 公式 ID ↔ 0..vertexCount-1，便于后续用 int[] 维护入度与队列 ---
-        HashMap<Long, Integer> formulaIdToVertexIndex = HashMap.newHashMap(vertexCount);
-        long[] vertexIndexToFormulaId = new long[vertexCount];
-        for (int vertexIndex = 0; vertexIndex < vertexCount; vertexIndex++) {
-            long formulaId = formulaIdsInWeakComponent.get(vertexIndex);
-            vertexIndexToFormulaId[vertexIndex] = formulaId;
-            formulaIdToVertexIndex.put(formulaId, vertexIndex);
-        }
-
-        // --- 建图：邻接表含义为「前置顶点 → 依赖它的当前公式顶点」---
-        // adjacencyOutgoingDependentVertices[i] = 所有「直接依赖公式 i」的顶点下标列表。
-        @SuppressWarnings("unchecked")
-        ArrayList<Integer>[] adjacencyOutgoingDependentVertices = new ArrayList[vertexCount];
-        for (int vertexIndex = 0; vertexIndex < vertexCount; vertexIndex++) {
-            adjacencyOutgoingDependentVertices[vertexIndex] = new ArrayList<>(4);
-        }
-        // inDegreeByVertexIndex[v] = 顶点 v（当前公式）尚未被「排队前面」消掉的前置个数；减到 0 表示可执行 v。
-        int[] inDegreeByVertexIndex = new int[vertexCount];
-
+    private static HashSet<Long> collectVertices(Map<Long, List<Long>> formulaIdMap) {
+        // 顶点数通常大于 entry 数；2*size 为经验预分配，减少 HashSet 扩容
+        int estimatedNodeCount = Math.max(16, formulaIdMap.size() * 2);
+        HashSet<Long> allFormulaIds = HashSet.newHashSet(estimatedNodeCount);
         for (Map.Entry<Long, List<Long>> formulaEntry : formulaIdMap.entrySet()) {
-            Long dependentFormulaId = formulaEntry.getKey();
-            if (dependentFormulaId == null) {
-                continue;
-            }
-            Integer dependentVertexIndex = formulaIdToVertexIndex.get(dependentFormulaId);
-            if (dependentVertexIndex == null) {
-                // 该 key 不是本分量的顶点，跳过
-                continue;
-            }
-            List<Long> prerequisiteFormulaIds = formulaEntry.getValue();
-            if (prerequisiteFormulaIds == null || prerequisiteFormulaIds.isEmpty()) {
-                continue;
-            }
-            for (Long prerequisiteFormulaId : prerequisiteFormulaIds) {
-                if (prerequisiteFormulaId == null) {
-                    continue;
-                }
-                Integer prerequisiteVertexIndex =
-                        formulaIdToVertexIndex.get(prerequisiteFormulaId);
-                if (prerequisiteVertexIndex == null) {
-                    // 前置不在本分量子图内（例如跨弱连通分量的错误引用）：本方法不建边，相当于忽略该依赖
-                    continue;
-                }
-                adjacencyOutgoingDependentVertices[prerequisiteVertexIndex].add(dependentVertexIndex);
-                inDegreeByVertexIndex[dependentVertexIndex]++;
-            }
+            addKeyIfPresent(allFormulaIds, formulaEntry.getKey());
+            addNonNullPrerequisites(allFormulaIds, formulaEntry.getValue());
         }
+        return allFormulaIds;
+    }
 
-        // --- 初始化 Kahn 队列：所有入度为 0 的顶点一次性入队（可并行执行的「当前层」）---
-        // 使用定长 int[] + 头尾指针模拟队列，避免 ArrayDeque<Integer> 装箱。
-        int[] readyVertexIndexRingBuffer = new int[vertexCount];
-        int queueHead = 0;
-        int queueTail = 0;
-        for (int vertexIndex = 0; vertexIndex < vertexCount; vertexIndex++) {
-            if (inDegreeByVertexIndex[vertexIndex] == 0) {
-                readyVertexIndexRingBuffer[queueTail++] = vertexIndex;
+    /** 将非 null 的公式 key 加入顶点集。 */
+    private static void addKeyIfPresent(HashSet<Long> allFormulaIds, Long formulaId) {
+        if (formulaId != null) {
+            allFormulaIds.add(formulaId);
+        }
+    }
+
+    /** 将依赖列表中的非 null 公式 ID 加入顶点集；{@code null} 列表视为无依赖项可收集。 */
+    private static void addNonNullPrerequisites(HashSet<Long> allFormulaIds, List<Long> prerequisiteFormulaIds) {
+        if (prerequisiteFormulaIds == null) {
+            return;
+        }
+        for (Long prerequisiteId : prerequisiteFormulaIds) {
+            if (prerequisiteId != null) {
+                allFormulaIds.add(prerequisiteId);
             }
         }
-
-        ArrayList<Long> executionOrderLeafToRoot = new ArrayList<>(vertexCount);
-        while (queueHead < queueTail) {
-            int readyFormulaVertexIndex = readyVertexIndexRingBuffer[queueHead++];
-            executionOrderLeafToRoot.add(vertexIndexToFormulaId[readyFormulaVertexIndex]);
-            ArrayList<Integer> dependentVertexIndices =
-                    adjacencyOutgoingDependentVertices[readyFormulaVertexIndex];
-            // 当前公式已执行完：所有「直接依赖它」的公式入度减 1
-            for (int edgeIndex = 0, outgoingCount = dependentVertexIndices.size();
-                    edgeIndex < outgoingCount;
-                    edgeIndex++) {
-                int dependentVertexIndex = dependentVertexIndices.get(edgeIndex);
-                if (--inDegreeByVertexIndex[dependentVertexIndex] == 0) {
-                    readyVertexIndexRingBuffer[queueTail++] = dependentVertexIndex;
-                }
-            }
-        }
-
-        // 正常 DAG：恰好访问 vertexCount 个顶点。若少于 vertexCount，说明环上顶点入度永不为 0，队列提前耗尽。
-        if (executionOrderLeafToRoot.size() != vertexCount) {
-            throw new IllegalStateException(
-                    "公式依赖图中存在环，无法确定执行顺序；请检查 formulaIdMap。");
-        }
-        return executionOrderLeafToRoot;
     }
 
     /**
-     * 无向并查集（Disjoint Set Union），用于<strong>弱连通分量</strong>划分。
+     * 为每个已知顶点建单元素集，再按 map 中「当前公式—各前置」在无向意义上 {@code union}，用于弱连通分量划分。
+     */
+    private static WeaklyConnectedComponents unionFindFromMap(
+            Map<Long, List<Long>> formulaIdMap, HashSet<Long> allFormulaIds) {
+        WeaklyConnectedComponents unionFind = new WeaklyConnectedComponents(allFormulaIds.size());
+        for (Long formulaId : allFormulaIds) {
+            unionFind.findRepresentative(formulaId);
+        }
+        for (Map.Entry<Long, List<Long>> formulaEntry : formulaIdMap.entrySet()) {
+            unionDependentWithPrerequisites(unionFind, formulaEntry.getKey(), formulaEntry.getValue());
+        }
+        return unionFind;
+    }
+
+    /**
+     * 对单条 map 条目：若 key 非 null 且依赖列表非空，则将当前公式与各非 null 前置在无向并查集中合并。
+     */
+    private static void unionDependentWithPrerequisites(
+            WeaklyConnectedComponents unionFind, Long dependentFormulaId, List<Long> prerequisiteFormulaIds) {
+        if (dependentFormulaId == null) {
+            return;
+        }
+        if (prerequisiteFormulaIds == null || prerequisiteFormulaIds.isEmpty()) {
+            return;
+        }
+        long dependent = dependentFormulaId.longValue();
+        for (Long prerequisiteFormulaId : prerequisiteFormulaIds) {
+            if (prerequisiteFormulaId == null) {
+                continue;
+            }
+            unionFind.union(dependent, prerequisiteFormulaId.longValue());
+        }
+    }
+
+    /**
+     * 按并查集代表元将顶点分桶，并维护每个桶内最小公式 ID（用于外层分量稳定排序）。
+     */
+    private static ComponentBuckets bucketFormulasByRepresentative(
+            HashSet<Long> allFormulaIds, WeaklyConnectedComponents unionFind) {
+        HashMap<Long, ArrayList<Long>> formulaIdsByComponentRoot =
+                HashMap.newHashMap(allFormulaIds.size());
+        HashMap<Long, Long> smallestFormulaIdInComponent = HashMap.newHashMap(allFormulaIds.size());
+        for (Long formulaId : allFormulaIds) {
+            long representative = unionFind.findRepresentative(formulaId);
+            formulaIdsByComponentRoot
+                    .computeIfAbsent(representative, k -> new ArrayList<>(8))
+                    .add(formulaId);
+            smallestFormulaIdInComponent.merge(representative, formulaId, Math::min);
+        }
+        return new ComponentBuckets(formulaIdsByComponentRoot, smallestFormulaIdInComponent);
+    }
+
+    /**
+     * 将各弱连通分量的代表元排序；比较键为该分量中的最小公式 ID，而非并查集内部根 ID。
+     */
+    private static List<Long> orderRootsBySmallestFormulaId(ComponentBuckets buckets) {
+        ArrayList<Long> roots = new ArrayList<>(buckets.formulaIdsByComponentRoot.keySet());
+        roots.sort(Comparator.comparingLong(buckets.smallestFormulaIdInComponent::get));
+        return roots;
+    }
+
+    /**
+     * 按已排序的分量顺序，依次对每桶顶点调用分量内 Kahn，拼成外层 {@code List<List<Long>>}。
+     */
+    private static List<List<Long>> sortEachWeakComponent(
+            Map<Long, List<Long>> formulaIdMap,
+            ComponentBuckets buckets,
+            List<Long> componentRootsOrderedByMinFormulaId) {
+        ArrayList<List<Long>> executionOrderPerWeakComponent =
+                new ArrayList<>(componentRootsOrderedByMinFormulaId.size());
+        for (Long componentRoot : componentRootsOrderedByMinFormulaId) {
+            ArrayList<Long> idsInComponent = buckets.formulaIdsByComponentRoot.get(componentRoot);
+            executionOrderPerWeakComponent.add(
+                    topologicalSortSingleWeakComponent(formulaIdMap, idsInComponent));
+        }
+        return executionOrderPerWeakComponent;
+    }
+
+    /**
+     * 在单个弱连通分量上：稠密编号 → 只建两端均在本分量内的有向边（前置→当前）→ Kahn 拓扑序。
      *
-     * <p>与「强连通」区别：这里把「公式 A 依赖 B」看成无向边 A—B；同一无向连通块内的公式可能并不互相可达（有向），
-     * 但属于同一张无向子图，本工具将它们在<strong>外层 List</strong>里拆成一组单独排序。
+     * @param formulaIdMap 全图依赖；仅读取属于本分量的条目建边
+     * @param formulaIdsInWeakComponent 本分量的顶点列表
+     * @return 该分量上的「叶子→根」拓扑序
+     * @throws IllegalStateException 本分量子图存在有向环时
+     */
+    private static List<Long> topologicalSortSingleWeakComponent(
+            Map<Long, List<Long>> formulaIdMap, ArrayList<Long> formulaIdsInWeakComponent) {
+        int vertexCount = formulaIdsInWeakComponent.size();
+        if (vertexCount == 0) {
+            return List.of();
+        }
+        DenseVertexGraph graph = DenseVertexGraph.fromComponent(formulaIdsInWeakComponent);
+        graph.addIntraComponentEdges(formulaIdMap);
+        return graph.runKahnOrThrow();
+    }
+
+    /**
+     * 弱连通分量分桶结果：按并查集代表元索引顶点列表，并记录每桶最小公式 ID。
      *
-     * <p><strong>内部策略</strong>
-     *
-     * <ul>
-     *   <li><strong>路径压缩</strong>：find 时把途经节点直接挂到根，缩短以后 find 链长。
-     *   <li><strong>按 size 合并</strong>：把小根树挂到大根树下，使树高均摊更小；根 ID 不一定是集合中最小公式 ID。
-     *   <li>外层排序不依赖「根是谁」，而是用 {@code smallestFormulaIdInComponent} 按业务最小 ID 排分量顺序。
-     * </ul>
+     * @param formulaIdsByComponentRoot key 为代表元，value 为该分量全部公式 ID
+     * @param smallestFormulaIdInComponent 与上式 key 对齐，存该分量最小公式 ID
+     */
+    private record ComponentBuckets(
+            HashMap<Long, ArrayList<Long>> formulaIdsByComponentRoot,
+            HashMap<Long, Long> smallestFormulaIdInComponent) {
+    }
+
+    /**
+     * 单个弱连通分量上的有向图 + Kahn 状态：将稀疏 {@link Long} 公式 ID 映射为 {@code 0..n-1} 下标，用热路径友好的
+     * {@code int[]} 与定长队列实现拓扑排序。
+     */
+    private static final class DenseVertexGraph {
+        private final int vertexCount;
+        /** 公式 ID → 稠密顶点下标。 */
+        private final HashMap<Long, Integer> formulaIdToVertexIndex;
+        /** 稠密下标 → 公式 ID，出队时写回结果序列。 */
+        private final long[] vertexIndexToFormulaId;
+        /**
+         * 邻接表：下标 {@code i} 为「前置公式」顶点，列表内存「直接依赖该前置」的顶点下标（有向边 前置→当前）。
+         */
+        private final ArrayList<Integer>[] adjacencyOutgoingDependentVertices;
+        /** 各顶点（当前公式）尚未被排队消解的直接前置个数；Kahn 中减至 0 即可入队。 */
+        private final int[] inDegreeByVertexIndex;
+
+        /**
+         * @param vertexCount 分量顶点数 n
+         * @param formulaIdToVertexIndex 公式 ID → 0..n-1
+         * @param vertexIndexToFormulaId 反向映射，输出序时还原 Long ID
+         */
+        @SuppressWarnings("unchecked")
+        private DenseVertexGraph(
+                int vertexCount,
+                HashMap<Long, Integer> formulaIdToVertexIndex,
+                long[] vertexIndexToFormulaId) {
+            this.vertexCount = vertexCount;
+            this.formulaIdToVertexIndex = formulaIdToVertexIndex;
+            this.vertexIndexToFormulaId = vertexIndexToFormulaId;
+            this.adjacencyOutgoingDependentVertices = new ArrayList[vertexCount];
+            this.inDegreeByVertexIndex = new int[vertexCount];
+            for (int i = 0; i < vertexCount; i++) {
+                adjacencyOutgoingDependentVertices[i] = new ArrayList<>(4);
+            }
+        }
+
+        /**
+         * 根据分量顶点列表建立 ID↔下标双向映射及空邻接表。
+         */
+        static DenseVertexGraph fromComponent(ArrayList<Long> formulaIdsInWeakComponent) {
+            int n = formulaIdsInWeakComponent.size();
+            HashMap<Long, Integer> idToIndex = HashMap.newHashMap(n);
+            long[] indexToId = new long[n];
+            for (int i = 0; i < n; i++) {
+                long formulaId = formulaIdsInWeakComponent.get(i);
+                indexToId[i] = formulaId;
+                idToIndex.put(formulaId, i);
+            }
+            return new DenseVertexGraph(n, idToIndex, indexToId);
+        }
+
+        /** 遍历全图 map，仅当「当前公式」与「前置」均映射到本分量下标时，添加有向边并更新入度。 */
+        void addIntraComponentEdges(Map<Long, List<Long>> formulaIdMap) {
+            for (Map.Entry<Long, List<Long>> entry : formulaIdMap.entrySet()) {
+                addEdgesForEntry(entry.getKey(), entry.getValue());
+            }
+        }
+
+        /** 处理 map 单条 entry：跳过 null key、非本分量顶点、空依赖。 */
+        private void addEdgesForEntry(Long dependentFormulaId, List<Long> prerequisiteFormulaIds) {
+            if (dependentFormulaId == null) {
+                return;
+            }
+            Integer dependentVertexIndex = formulaIdToVertexIndex.get(dependentFormulaId);
+            if (dependentVertexIndex == null) {
+                return;
+            }
+            if (prerequisiteFormulaIds == null || prerequisiteFormulaIds.isEmpty()) {
+                return;
+            }
+            for (Long prerequisiteFormulaId : prerequisiteFormulaIds) {
+                addEdgeFromPrerequisiteToDependent(prerequisiteFormulaId, dependentVertexIndex);
+            }
+        }
+
+        /**
+         * 添加边「前置 → 当前」：前置、当前必须均在本分量内；跨分量或 null 前置不建边（与主类文档约定一致）。
+         */
+        private void addEdgeFromPrerequisiteToDependent(Long prerequisiteFormulaId, int dependentVertexIndex) {
+            if (prerequisiteFormulaId == null) {
+                return;
+            }
+            Integer prerequisiteVertexIndex = formulaIdToVertexIndex.get(prerequisiteFormulaId);
+            if (prerequisiteVertexIndex == null) {
+                return;
+            }
+            adjacencyOutgoingDependentVertices[prerequisiteVertexIndex].add(dependentVertexIndex);
+            inDegreeByVertexIndex[dependentVertexIndex]++;
+        }
+
+        /**
+         * Kahn 算法：入度为 0 先入队，反复出队并松弛出边；若最终访问顶点数不足则判环并抛异常。
+         */
+        List<Long> runKahnOrThrow() {
+            int[] queue = new int[vertexCount];
+            int tail = enqueueZeroInDegreeVertices(queue);
+            ArrayList<Long> order = drainQueue(queue, tail);
+            if (order.size() != vertexCount) {
+                throw new IllegalStateException(
+                        "公式依赖图中存在环，无法确定执行顺序；请检查 formulaIdMap。");
+            }
+            return order;
+        }
+
+        /** 将所有入度为 0 的顶点下标写入环形缓冲区队尾，返回初始队尾指针。 */
+        private int enqueueZeroInDegreeVertices(int[] readyVertexIndexRingBuffer) {
+            int queueTail = 0;
+            for (int vertexIndex = 0; vertexIndex < vertexCount; vertexIndex++) {
+                if (inDegreeByVertexIndex[vertexIndex] == 0) {
+                    readyVertexIndexRingBuffer[queueTail++] = vertexIndex;
+                }
+            }
+            return queueTail;
+        }
+
+        /** 反复出队、追加公式 ID 到结果、对出边做入度减一并推送新入度为 0 的顶点。 */
+        private ArrayList<Long> drainQueue(int[] readyVertexIndexRingBuffer, int initialTail) {
+            ArrayList<Long> executionOrderLeafToRoot = new ArrayList<>(vertexCount);
+            int queueHead = 0;
+            int queueTail = initialTail;
+            while (queueHead < queueTail) {
+                int u = readyVertexIndexRingBuffer[queueHead++];
+                executionOrderLeafToRoot.add(vertexIndexToFormulaId[u]);
+                queueTail = relaxOutgoing(u, readyVertexIndexRingBuffer, queueTail);
+            }
+            return executionOrderLeafToRoot;
+        }
+
+        /** 对刚出队顶点松弛所有出边，返回更新后的队尾指针。 */
+        private int relaxOutgoing(int readyVertexIndex, int[] ringBuffer, int queueTail) {
+            ArrayList<Integer> outs = adjacencyOutgoingDependentVertices[readyVertexIndex];
+            int outgoingCount = outs.size();
+            for (int edgeIndex = 0; edgeIndex < outgoingCount; edgeIndex++) {
+                int v = outs.get(edgeIndex);
+                if (--inDegreeByVertexIndex[v] == 0) {
+                    ringBuffer[queueTail++] = v;
+                }
+            }
+            return queueTail;
+        }
+    }
+
+    /**
+     * 无向并查集：用于「当前公式—前置」无向连边后的弱连通分量划分；按集合 size 合并并路径压缩。
      */
     private static final class WeaklyConnectedComponents {
-        /** 父指针：parentByFormulaId[x]=x 表示 x 是当前集合代表元 */
+        /** 父指针：值为自身时表示当前结点为代表元。 */
         private final HashMap<Long, Long> parentByFormulaId;
-        /**
-         * 仅当某节点当前是集合代表元时，记录该集合元素个数；用于 union 时比大小。
-         * 非根节点上的 size 条目会在 union 后被 remove，避免歧义。
-         */
+        /** 仅根结点维护集合元素个数，供 union 时比大小。 */
         private final HashMap<Long, Integer> componentSizeByRepresentative;
 
+        /**
+         * @param expectedDistinctFormulaIds 预估不同公式 ID 数量，用于 {@link HashMap} 初始容量
+         */
         WeaklyConnectedComponents(int expectedDistinctFormulaIds) {
             this.parentByFormulaId = HashMap.newHashMap(expectedDistinctFormulaIds);
             this.componentSizeByRepresentative = HashMap.newHashMap(expectedDistinctFormulaIds);
         }
 
         /**
-         * 查找 {@code formulaId} 所在集合的代表元；若首次出现则创建单元素集合。
-         *
-         * @param formulaId 公式 ID
-         * @return 该集合代表元（合并过程中可能变化，但同一集合内所有 ID 的 find 结果最终一致）
+         * 查找 {@code formulaId} 所在集合代表元；首次访问时创建单元素集合。
          */
         long findRepresentative(long formulaId) {
             Long parentOrSelf = parentByFormulaId.get(formulaId);
             if (parentOrSelf == null) {
-                parentByFormulaId.put(formulaId, formulaId);
-                componentSizeByRepresentative.put(formulaId, 1);
-                return formulaId;
+                return makeSingleton(formulaId);
             }
-            long parentFormulaId = parentOrSelf;
-            if (parentFormulaId != formulaId) {
-                // 递归找到根后，把当前节点直接指向根（路径压缩）
-                long rootRepresentative = findRepresentative(parentFormulaId);
-                parentByFormulaId.put(formulaId, rootRepresentative);
-                return rootRepresentative;
-            }
+            return compressIfNeeded(formulaId, parentOrSelf);
+        }
+
+        /** 初始化单元素集合：父指向自己，size 为 1。 */
+        private long makeSingleton(long formulaId) {
+            parentByFormulaId.put(formulaId, formulaId);
+            componentSizeByRepresentative.put(formulaId, 1);
             return formulaId;
         }
 
-        /**
-         * 将包含 {@code formulaIdA} 与 {@code formulaIdB} 的两个集合合并（若已在同一集合则 noop）。
-         *
-         * @param formulaIdA 公式 ID
-         * @param formulaIdB 公式 ID
-         */
+        /** 若非根则递归找根并把当前结点直接挂到根（路径压缩）。 */
+        private long compressIfNeeded(long formulaId, Long parentOrSelf) {
+            long parentFormulaId = parentOrSelf;
+            if (parentFormulaId == formulaId) {
+                return formulaId;
+            }
+            long rootRepresentative = findRepresentative(parentFormulaId);
+            parentByFormulaId.put(formulaId, rootRepresentative);
+            return rootRepresentative;
+        }
+
+        /** 合并两公式所在集合；已在同一集合则为空操作。 */
         void union(long formulaIdA, long formulaIdB) {
             long rootA = findRepresentative(formulaIdA);
             long rootB = findRepresentative(formulaIdB);
@@ -358,16 +439,23 @@ public final class FormulaTopologicalSort {
             }
             int sizeA = componentSizeByRepresentative.getOrDefault(rootA, 1);
             int sizeB = componentSizeByRepresentative.getOrDefault(rootB, 1);
-            // 小树挂大树：合并后只保留新根的 size，旧根的 size 删除，避免误用旧根统计
+            mergeBySize(rootA, rootB, sizeA, sizeB);
+        }
+
+        /** 小树挂大树，保持合并后高度均摊更小。 */
+        private void mergeBySize(long rootA, long rootB, int sizeA, int sizeB) {
             if (sizeA < sizeB) {
-                parentByFormulaId.put(rootA, rootB);
-                componentSizeByRepresentative.put(rootB, sizeA + sizeB);
-                componentSizeByRepresentative.remove(rootA);
+                attach(rootA, rootB, sizeA + sizeB);
             } else {
-                parentByFormulaId.put(rootB, rootA);
-                componentSizeByRepresentative.put(rootA, sizeA + sizeB);
-                componentSizeByRepresentative.remove(rootB);
+                attach(rootB, rootA, sizeA + sizeB);
             }
+        }
+
+        /** 将 {@code childRoot} 挂到 {@code parentRoot}，更新新根 size 并删除旧根 size 记录。 */
+        private void attach(long childRoot, long parentRoot, int mergedSize) {
+            parentByFormulaId.put(childRoot, parentRoot);
+            componentSizeByRepresentative.put(parentRoot, mergedSize);
+            componentSizeByRepresentative.remove(childRoot);
         }
     }
 }

@@ -32,13 +32,9 @@ import org.junit.jupiter.api.Test;
 class FormulaTopologicalSortTest {
 
     /**
-     * 将多个弱连通分量上的拓扑序依次拼接为一条 {@code List<Long>}。
-     *
-     * <p>注意：拼接顺序必须与 {@link FormulaTopologicalSort#sort} 返回的外层 List 顺序一致（本测试直接 flatten 排序结果）。
-     * 任意两个不同分量之间没有依赖边，因此「分量 A 全部在前、分量 B 全部在后」的扁平序列仍满足每条边的先后约束。
+     * 将各弱连通分量上的拓扑序按外层 List 顺序依次拼接为一条序列（仅用于断言；调度仍应以分量为单位）。
      *
      * @param executionOrderByWeakComponent {@link FormulaTopologicalSort#sort} 的返回值；{@code null} 时返回 {@code null}
-     * @return 扁平化后的公式 ID 序列；若入参为 {@code null} 则返回 {@code null}
      */
     private static List<Long> flatten(List<List<Long>> executionOrderByWeakComponent) {
         if (executionOrderByWeakComponent == null) {
@@ -52,103 +48,163 @@ class FormulaTopologicalSortTest {
     }
 
     /**
-     * 在标准输出打印单条用例的入参（依赖图）与出参（排序结果）。
+     * 在控制台打印用例名称、入参 map、出参分量列表（便于 {@code mvn test} 肉眼验收）。
      *
-     * <p>入参按 key 排序打印（含 {@code null} key 时排在最前），便于与业务日志对齐；出参除整体 {@code toString()} 外，逐个子图打印一行。
-     *
-     * @param scenarioName 用例名称（建议与 {@code @Test} 方法名一致）
-     * @param formulaIdToPrerequisiteFormulaIds 与生产 API 相同的 map；可为 {@code null}
-     * @param executionOrderByWeakComponent 排序结果；环检测场景下可能为 {@code null}（{@link FormulaTopologicalSort#trySort}）
+     * @param scenarioName 用例标识
+     * @param formulaIdToPrerequisiteFormulaIds 入参；可为 {@code null}
+     * @param executionOrderByWeakComponent 出参；环场景下可能为 {@code null}
      */
     private static void printIo(
             String scenarioName,
             Map<Long, List<Long>> formulaIdToPrerequisiteFormulaIds,
             List<List<Long>> executionOrderByWeakComponent) {
+        printScenarioBanner(scenarioName);
+        printInputSection(formulaIdToPrerequisiteFormulaIds);
+        printOutputSection(executionOrderByWeakComponent);
+        printScenarioFooter();
+    }
+
+    /** 打印用例横幅（空行 + 标题）。 */
+    private static void printScenarioBanner(String scenarioName) {
         System.out.println();
         System.out.println("========== " + scenarioName + " ==========");
+    }
+
+    /**
+     * 打印入参区块：{@code null}、空 map、或非空时按键排序输出各 entry（null key 排在最前）。
+     */
+    private static void printInputSection(Map<Long, List<Long>> formulaIdToPrerequisiteFormulaIds) {
         System.out.println("【入参】formulaIdMap<Long, List<Long>>（key=公式ID，value=直接依赖的公式ID）:");
         if (formulaIdToPrerequisiteFormulaIds == null) {
             System.out.println("  null");
-        } else if (formulaIdToPrerequisiteFormulaIds.isEmpty()) {
-            System.out.println("  {}");
-        } else {
-            formulaIdToPrerequisiteFormulaIds.entrySet().stream()
-                    .sorted(
-                            Map.Entry.<Long, List<Long>>comparingByKey(
-                                    Comparator.nullsFirst(Comparator.naturalOrder())))
-                    .forEach(
-                            entry ->
-                                    System.out.println(
-                                            "  " + entry.getKey() + " -> " + entry.getValue()));
+            return;
         }
+        if (formulaIdToPrerequisiteFormulaIds.isEmpty()) {
+            System.out.println("  {}");
+            return;
+        }
+        printSortedEntries(formulaIdToPrerequisiteFormulaIds);
+    }
+
+    /** 将 map entry 按键排序后逐行打印。 */
+    private static void printSortedEntries(Map<Long, List<Long>> formulaIdToPrerequisiteFormulaIds) {
+        formulaIdToPrerequisiteFormulaIds.entrySet().stream()
+                .sorted(
+                        Map.Entry.<Long, List<Long>>comparingByKey(
+                                Comparator.nullsFirst(Comparator.naturalOrder())))
+                .forEach(
+                        entry ->
+                                System.out.println(
+                                        "  " + entry.getKey() + " -> " + entry.getValue()));
+    }
+
+    /**
+     * 打印出参区块：{@code null}（无合法序）、空列表、或非空时的整体 toString、逐分量行与总步数。
+     */
+    private static void printOutputSection(List<List<Long>> executionOrderByWeakComponent) {
         System.out.println("【出参】List<List<Long>>（外层=互不连通的子图，内层=该子图内 叶子→根）:");
         if (executionOrderByWeakComponent == null) {
             System.out.println("  null（无合法拓扑序，例如存在环）");
-        } else if (executionOrderByWeakComponent.isEmpty()) {
-            System.out.println("  []");
-        } else {
-            System.out.println("  " + executionOrderByWeakComponent);
-            for (int weakComponentIndex = 0;
-                    weakComponentIndex < executionOrderByWeakComponent.size();
-                    weakComponentIndex++) {
-                System.out.println(
-                        "    子图["
-                                + weakComponentIndex
-                                + "]: "
-                                + executionOrderByWeakComponent.get(weakComponentIndex));
-            }
-            int totalFormulaSteps =
-                    executionOrderByWeakComponent.stream().mapToInt(List::size).sum();
-            System.out.println("  公式总步数: " + totalFormulaSteps);
+            return;
         }
+        if (executionOrderByWeakComponent.isEmpty()) {
+            System.out.println("  []");
+            return;
+        }
+        printNonEmptyOutput(executionOrderByWeakComponent);
+    }
+
+    /** 非空出参：打印完整 list、各子图一行、公式总步数。 */
+    private static void printNonEmptyOutput(List<List<Long>> executionOrderByWeakComponent) {
+        System.out.println("  " + executionOrderByWeakComponent);
+        int size = executionOrderByWeakComponent.size();
+        for (int weakComponentIndex = 0; weakComponentIndex < size; weakComponentIndex++) {
+            System.out.println(
+                    "    子图["
+                            + weakComponentIndex
+                            + "]: "
+                            + executionOrderByWeakComponent.get(weakComponentIndex));
+        }
+        int totalFormulaSteps =
+                executionOrderByWeakComponent.stream().mapToInt(List::size).sum();
+        System.out.println("  公式总步数: " + totalFormulaSteps);
+    }
+
+    /** 打印用例结束分隔线。 */
+    private static void printScenarioFooter() {
         System.out.println("==========================================");
     }
 
     /**
-     * 断言：对 {@code formulaIdToPrerequisiteFormulaIds} 中每个非 null 的 key（当前公式），其每个非 null 前置在
-     * {@code flattenedOrder} 中的位置必须<strong>严格小于</strong>当前公式的位置。
+     * 断言：对 map 中每个非 null key，其每个非 null 前置在扁平序列中的位置严格小于该 key 的位置。
      *
-     * <p>不检查 key 为 {@code null} 的条目；不检查 value 为 {@code null} 的整条依赖（与主实现「无依赖」语义一致）。
-     * 若前置未出现在 flatten 序列中（理论上不应发生于与主实现一致的输入），{@link Map#get} 将抛 NPE 或断言失败，便于暴露数据错误。
-     *
-     * @param formulaIdToPrerequisiteFormulaIds 与 {@link FormulaTopologicalSort#sort} 入参相同
-     * @param executionOrderByWeakComponent 与 {@link FormulaTopologicalSort#sort} 返回值相同
+     * @param formulaIdToPrerequisiteFormulaIds 与 {@link FormulaTopologicalSort#sort} 入参一致
+     * @param executionOrderByWeakComponent 与 {@link FormulaTopologicalSort#sort} 返回值一致
      */
     private static void assertValidTopologicalOrder(
             Map<Long, List<Long>> formulaIdToPrerequisiteFormulaIds,
             List<List<Long>> executionOrderByWeakComponent) {
         List<Long> flattenedOrder = flatten(executionOrderByWeakComponent);
+        Map<Long, Integer> formulaIdToPositionInFlattenedOrder = indexPositions(flattenedOrder);
+        for (Map.Entry<Long, List<Long>> formulaEntry : formulaIdToPrerequisiteFormulaIds.entrySet()) {
+            assertEntryRespectsOrder(formulaEntry, formulaIdToPositionInFlattenedOrder, flattenedOrder);
+        }
+    }
+
+    /** 将扁平序列中每个公式 ID 映射为其首次出现下标。 */
+    private static Map<Long, Integer> indexPositions(List<Long> flattenedOrder) {
         Map<Long, Integer> formulaIdToPositionInFlattenedOrder = new HashMap<>();
         for (int position = 0; position < flattenedOrder.size(); position++) {
             formulaIdToPositionInFlattenedOrder.put(flattenedOrder.get(position), position);
         }
-        for (Map.Entry<Long, List<Long>> formulaEntry : formulaIdToPrerequisiteFormulaIds.entrySet()) {
-            Long dependentFormulaId = formulaEntry.getKey();
-            if (dependentFormulaId == null) {
-                continue;
-            }
-            List<Long> prerequisiteFormulaIds = formulaEntry.getValue();
-            if (prerequisiteFormulaIds == null) {
-                continue;
-            }
-            int dependentPosition =
-                    formulaIdToPositionInFlattenedOrder.get(dependentFormulaId);
-            for (Long prerequisiteFormulaId : prerequisiteFormulaIds) {
-                if (prerequisiteFormulaId == null) {
-                    continue;
-                }
-                assertTrue(
-                        formulaIdToPositionInFlattenedOrder.get(prerequisiteFormulaId)
-                                < dependentPosition,
-                        () ->
-                                "依赖 "
-                                        + prerequisiteFormulaId
-                                        + " 须在公式 "
-                                        + dependentFormulaId
-                                        + " 之前，顺序="
-                                        + flattenedOrder);
-            }
+        return formulaIdToPositionInFlattenedOrder;
+    }
+
+    /** 校验单条 map entry：跳过 null key 与 null 整条 value。 */
+    private static void assertEntryRespectsOrder(
+            Map.Entry<Long, List<Long>> formulaEntry,
+            Map<Long, Integer> formulaIdToPositionInFlattenedOrder,
+            List<Long> flattenedOrder) {
+        Long dependentFormulaId = formulaEntry.getKey();
+        if (dependentFormulaId == null) {
+            return;
         }
+        List<Long> prerequisiteFormulaIds = formulaEntry.getValue();
+        if (prerequisiteFormulaIds == null) {
+            return;
+        }
+        int dependentPosition = formulaIdToPositionInFlattenedOrder.get(dependentFormulaId);
+        for (Long prerequisiteFormulaId : prerequisiteFormulaIds) {
+            assertPrerequisiteBeforeDependent(
+                    prerequisiteFormulaId,
+                    dependentFormulaId,
+                    dependentPosition,
+                    formulaIdToPositionInFlattenedOrder,
+                    flattenedOrder);
+        }
+    }
+
+    /**
+     * 断言单个前置在扁平序中位于当前公式之前；{@code null} 前置跳过。
+     */
+    private static void assertPrerequisiteBeforeDependent(
+            Long prerequisiteFormulaId,
+            Long dependentFormulaId,
+            int dependentPosition,
+            Map<Long, Integer> formulaIdToPositionInFlattenedOrder,
+            List<Long> flattenedOrder) {
+        if (prerequisiteFormulaId == null) {
+            return;
+        }
+        assertTrue(
+                formulaIdToPositionInFlattenedOrder.get(prerequisiteFormulaId) < dependentPosition,
+                () ->
+                        "依赖 "
+                                + prerequisiteFormulaId
+                                + " 须在公式 "
+                                + dependentFormulaId
+                                + " 之前，顺序="
+                                + flattenedOrder);
     }
 
     @Test
@@ -305,22 +361,9 @@ class FormulaTopologicalSortTest {
         assertValidTopologicalOrder(m, groups);
     }
 
-    /**
-     * 实际编排示例：一张「家计」表里多段公式——收入/支出汇总与结余相连为一大子图，另一段独立公式链为另一子图。
-     */
     @Test
     void sort_demo_familyBudgetStyleFormulas_printsIo() {
-        Map<Long, List<Long>> formulaIdToPrerequisiteFormulaIds = new HashMap<>();
-        formulaIdToPrerequisiteFormulaIds.put(1001L, List.of()); // 工资
-        formulaIdToPrerequisiteFormulaIds.put(1002L, List.of()); // 奖金
-        formulaIdToPrerequisiteFormulaIds.put(1100L, List.of(1001L, 1002L)); // 收入小计
-        formulaIdToPrerequisiteFormulaIds.put(2001L, List.of()); // 房租
-        formulaIdToPrerequisiteFormulaIds.put(2002L, List.of()); // 餐饮
-        formulaIdToPrerequisiteFormulaIds.put(2100L, List.of(2001L, 2002L)); // 支出小计
-        formulaIdToPrerequisiteFormulaIds.put(3000L, List.of(1100L, 2100L)); // 结余
-        formulaIdToPrerequisiteFormulaIds.put(5001L, List.of()); // 另一模块：基础值
-        formulaIdToPrerequisiteFormulaIds.put(5002L, List.of(5001L)); // 依赖基础值
-
+        Map<Long, List<Long>> formulaIdToPrerequisiteFormulaIds = buildFamilyBudgetDemoMap();
         List<List<Long>> executionOrderByWeakComponent =
                 FormulaTopologicalSort.sort(formulaIdToPrerequisiteFormulaIds);
         printIo(
@@ -330,5 +373,22 @@ class FormulaTopologicalSortTest {
         assertEquals(2, executionOrderByWeakComponent.size());
         assertValidTopologicalOrder(
                 formulaIdToPrerequisiteFormulaIds, executionOrderByWeakComponent);
+    }
+
+    /**
+     * 构造「家计」风格示例：一大子图（收入/支出汇总→结余）与另一独立链（5001→5002），预期外层 List 大小为 2。
+     */
+    private static Map<Long, List<Long>> buildFamilyBudgetDemoMap() {
+        Map<Long, List<Long>> formulaIdToPrerequisiteFormulaIds = new HashMap<>();
+        formulaIdToPrerequisiteFormulaIds.put(1001L, List.of());
+        formulaIdToPrerequisiteFormulaIds.put(1002L, List.of());
+        formulaIdToPrerequisiteFormulaIds.put(1100L, List.of(1001L, 1002L));
+        formulaIdToPrerequisiteFormulaIds.put(2001L, List.of());
+        formulaIdToPrerequisiteFormulaIds.put(2002L, List.of());
+        formulaIdToPrerequisiteFormulaIds.put(2100L, List.of(2001L, 2002L));
+        formulaIdToPrerequisiteFormulaIds.put(3000L, List.of(1100L, 2100L));
+        formulaIdToPrerequisiteFormulaIds.put(5001L, List.of());
+        formulaIdToPrerequisiteFormulaIds.put(5002L, List.of(5001L));
+        return formulaIdToPrerequisiteFormulaIds;
     }
 }
