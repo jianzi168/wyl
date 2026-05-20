@@ -1,77 +1,44 @@
 import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Excel坐标转换工具类（高性能版本）
+ * Excel坐标转换工具类（高性能版本，无列数限制）
  * 
  * 提供Excel单元格引用、数字坐标、表单位置之间的转换功能
+ * 
+ * 支持任意数量的Excel列（A-Z, AA-ZZ, AAA-ZZZ等）
+ * Excel最大支持16,384列（XFD）
  * 
  * 性能优化：
  * - 使用缓存避免重复计算
  * - 使用高效的字符串处理
- * - 预计算列字母表
  * - 使用ConcurrentHashMap支持并发访问
+ * - 动态列字母转换算法，无预计算限制
  * 
  * @author Hermes Agent
- * @version 2.0
+ * @version 2.1
  */
 public final class ExcelCoordinateConverter {
-    
-    /** Excel列字母表（A-Z, AA-ZZ, ...）预计算 */
-    private static final String[] COLUMN_LETTERS = precomputeColumnLetters();
-    
-    /** 列字母到索引的映射（缓存） */
-    private static final Map<String, Integer> COLUMN_LETTER_TO_INDEX_MAP = buildColumnLetterToIndexMap();
     
     /** Excel引用到表单位置的缓存 */
     private static final Map<String, int[]> EXCEL_REF_TO_POSITION_CACHE = new ConcurrentHashMap<>();
     
     /** 表单位置到Excel引用的缓存 */
-    private static final String POSITION_TO_EXCEL_REF_CACHE_KEY = "POSITION_TO_EXCEL_REF";
     private static final Map<String, String> POSITION_TO_EXCEL_REF_CACHE = new ConcurrentHashMap<>();
     
-    /** 支持的最大列数 */
-    private static final int MAX_COLUMN_INDEX = 25;  // 支持到AZ列
+    /** 列索引到列字母的转换缓存 */
+    private static final Map<Integer, String> COLUMN_INDEX_TO_LETTER_CACHE = new ConcurrentHashMap<>();
     
-    /**
-     * 预计算列字母表
-     * 
-     * @return 列字母数组
-     */
-    private static String[] precomputeColumnLetters() {
-        String[] columnLettersArray = new String[MAX_COLUMN_INDEX + 1];
-        
-        // A-Z (0-25)
-        for (int columnIndex = 0; columnIndex < 26; columnIndex++) {
-            columnLettersArray[columnIndex] = String.valueOf((char) ('A' + columnIndex));
-        }
-        
-        // 可以继续扩展AA-ZZ等
-        
-        return columnLettersArray;
-    }
+    /** 列字母到列索引的转换缓存 */
+    private static final Map<String, Integer> COLUMN_LETTER_TO_INDEX_CACHE = new ConcurrentHashMap<>();
     
-    /**
-     * 构建列字母到索引的映射
-     * 
-     * @return 映射表
-     */
-    private static Map<String, Integer> buildColumnLetterToIndexMap() {
-        Map<String, Integer> columnLetterToIndexMap = new HashMap<>();
-        
-        for (int columnIndex = 0; columnIndex < COLUMN_LETTERS.length; columnIndex++) {
-            columnLetterToIndexMap.put(COLUMN_LETTERS[columnIndex], columnIndex);
-        }
-        
-        return columnLetterToIndexMap;
-    }
+    /** Excel最大支持列数（16,384列，XFD） */
+    private static final int EXCEL_MAX_COLUMNS = 16384;
     
     /**
      * Excel引用转数字坐标（从0开始，带缓存）
      * 
-     * @param excelReference Excel引用，如"A1", "B5", "D3"
+     * @param excelReference Excel引用，如"A1", "B5", "D3", "AA1", "XFD1"
      * @return 数字坐标[rowIndex, columnIndex]，索引从0开始
      * @throws IllegalArgumentException 如果格式无效
      */
@@ -122,11 +89,17 @@ public final class ExcelCoordinateConverter {
      * 
      * @param rowIndex 行索引（从0开始）
      * @param columnIndex 列索引（从0开始）
-     * @return Excel引用，如"A1", "B5", "D3"
+     * @return Excel引用，如"A1", "B5", "D3", "AA1"
+     * @throws IllegalArgumentException 如果坐标无效
      */
     public static String coordinatesToExcelReference(int rowIndex, int columnIndex) {
         if (rowIndex < 0 || columnIndex < 0) {
             throw new IllegalArgumentException("坐标不能为负数: [" + rowIndex + ", " + columnIndex + "]");
+        }
+        
+        if (columnIndex >= EXCEL_MAX_COLUMNS) {
+            throw new IllegalArgumentException("列索引超出Excel最大限制: " + columnIndex + 
+                    " (最大支持: " + (EXCEL_MAX_COLUMNS - 1) + ")");
         }
         
         String columnLetters = columnIndexToColumnLetter(columnIndex);
@@ -181,36 +154,101 @@ public final class ExcelCoordinateConverter {
     }
     
     /**
-     * 列字母转列索引（从0开始）
+     * 列字母转列索引（从0开始，带缓存）
      * 
-     * @param columnLetters 列字母，如"A", "B", "AA"
-     * @return 列索引
+     * 支持任意格式的Excel列字母，如A、Z、AA、AZ、BA、ZZ、AAA等
+     * 
+     * @param columnLetters 列字母，如"A", "B", "AA", "XFD"
+     * @return 列索引（从0开始）
+     * @throws IllegalArgumentException 如果列字母无效
      */
     public static int columnLetterToColumnIndex(String columnLetters) {
         if (columnLetters == null || columnLetters.isEmpty()) {
             throw new IllegalArgumentException("列字母不能为空");
         }
         
-        Integer columnIndex = COLUMN_LETTER_TO_INDEX_MAP.get(columnLetters.toUpperCase());
-        if (columnIndex == null) {
-            throw new IllegalArgumentException("不支持的列字母: " + columnLetters);
+        String upperCaseLetters = columnLetters.toUpperCase().trim();
+        
+        // 检查缓存
+        Integer cachedColumnIndex = COLUMN_LETTER_TO_INDEX_CACHE.get(upperCaseLetters);
+        if (cachedColumnIndex != null) {
+            return cachedColumnIndex;
         }
+        
+        // 验证格式
+        for (int charPosition = 0; charPosition < upperCaseLetters.length(); charPosition++) {
+            char currentChar = upperCaseLetters.charAt(charPosition);
+            if (currentChar < 'A' || currentChar > 'Z') {
+                throw new IllegalArgumentException("列字母格式无效: " + columnLetters);
+            }
+        }
+        
+        // 转换算法：类似26进制，但是A=1, B=2, ..., Z=26
+        int columnIndex = 0;
+        int stringLength = upperCaseLetters.length();
+        
+        for (int charPosition = 0; charPosition < stringLength; charPosition++) {
+            char currentChar = upperCaseLetters.charAt(charPosition);
+            int charValue = currentChar - 'A' + 1;  // A=1, B=2, ..., Z=26
+            columnIndex = columnIndex * 26 + charValue;
+        }
+        
+        columnIndex -= 1;  // 转换为从0开始的索引
+        
+        // 验证是否超出Excel最大限制
+        if (columnIndex >= EXCEL_MAX_COLUMNS) {
+            throw new IllegalArgumentException("列字母超出Excel最大限制: " + columnLetters + 
+                    " (最大支持: XFD)");
+        }
+        
+        // 缓存结果
+        COLUMN_LETTER_TO_INDEX_CACHE.put(upperCaseLetters, columnIndex);
         
         return columnIndex;
     }
     
     /**
-     * 列索引转列字母
+     * 列索引转列字母（带缓存）
+     * 
+     * 支持任意列索引，自动转换为对应的Excel列字母
      * 
      * @param columnIndex 列索引（从0开始）
-     * @return 列字母
+     * @return 列字母，如"A", "B", "AA", "XFD"
+     * @throws IllegalArgumentException 如果列索引无效
      */
     public static String columnIndexToColumnLetter(int columnIndex) {
-        if (columnIndex < 0 || columnIndex >= COLUMN_LETTERS.length) {
-            throw new IllegalArgumentException("列索引超出范围: " + columnIndex);
+        if (columnIndex < 0) {
+            throw new IllegalArgumentException("列索引不能为负数: " + columnIndex);
         }
         
-        return COLUMN_LETTERS[columnIndex];
+        if (columnIndex >= EXCEL_MAX_COLUMNS) {
+            throw new IllegalArgumentException("列索引超出Excel最大限制: " + columnIndex + 
+                    " (最大支持: " + (EXCEL_MAX_COLUMNS - 1) + ", 即XFD)");
+        }
+        
+        // 检查缓存
+        String cachedColumnLetter = COLUMN_INDEX_TO_LETTER_CACHE.get(columnIndex);
+        if (cachedColumnLetter != null) {
+            return cachedColumnLetter;
+        }
+        
+        // 转换算法：类似26进制，但是没有0，需要特殊处理
+        StringBuilder columnLetterBuilder = new StringBuilder();
+        int remainingIndex = columnIndex + 1;  // A=1, B=2, ..., Z=26
+        
+        while (remainingIndex > 0) {
+            remainingIndex--;  // 转换为从0开始计算
+            int remainder = remainingIndex % 26;
+            columnLetterBuilder.insert(0, (char) ('A' + remainder));
+            remainingIndex = remainingIndex / 26;
+        }
+        
+        String columnLetter = columnLetterBuilder.toString();
+        
+        // 缓存结果
+        COLUMN_INDEX_TO_LETTER_CACHE.put(columnIndex, columnLetter);
+        
+        return columnLetter;
     }
     
     /**
@@ -275,6 +313,8 @@ public final class ExcelCoordinateConverter {
     public static void clearAllCaches() {
         EXCEL_REF_TO_POSITION_CACHE.clear();
         POSITION_TO_EXCEL_REF_CACHE.clear();
+        COLUMN_INDEX_TO_LETTER_CACHE.clear();
+        COLUMN_LETTER_TO_INDEX_CACHE.clear();
     }
     
     /**
@@ -283,8 +323,28 @@ public final class ExcelCoordinateConverter {
      * @return 统计信息字符串
      */
     public static String getCacheStatistics() {
-        return String.format("Excel引用缓存: %d, 位置缓存: %d",
+        return String.format("Excel引用缓存: %d, 位置缓存: %d, 列索引->字母缓存: %d, 列字母->索引缓存: %d",
                 EXCEL_REF_TO_POSITION_CACHE.size(),
-                POSITION_TO_EXCEL_REF_CACHE.size());
+                POSITION_TO_EXCEL_REF_CACHE.size(),
+                COLUMN_INDEX_TO_LETTER_CACHE.size(),
+                COLUMN_LETTER_TO_INDEX_CACHE.size());
+    }
+    
+    /**
+     * 获取Excel最大支持列数
+     * 
+     * @return 最大列数
+     */
+    public static int getMaxColumns() {
+        return EXCEL_MAX_COLUMNS;
+    }
+    
+    /**
+     * 获取Excel最大列字母
+     * 
+     * @return 最大列字母（XFD）
+     */
+    public static String getMaxColumnLetter() {
+        return "XFD";
     }
 }
