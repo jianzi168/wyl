@@ -85,8 +85,8 @@ public class FormulaParser {
      * 通过检查前后文判断是函数名还是单元格引用
      * 
      * @param formula 完整公式
-     * @param startIndex 匹配起始位置
-     * @param endIndex 匹配结束位置
+     * @param startIndex 单元格引用起始位置（包含）
+     * @param endIndex 单元格引用结束位置（不包含）
      * @return true如果是单元格引用，false如果是函数名
      */
     private static boolean isCellRef(String formula, int startIndex, int endIndex) {
@@ -126,6 +126,20 @@ public class FormulaParser {
                 }
                 
                 return true;  // 不是函数名，是单元格引用
+            }
+        }
+        
+        // 检查后一个字符（使用endIndex参数）
+        // 处理范围引用的情况，如 A1:B5
+        // 虽然目前实现会分别提取A1和B5，但这里保留扩展性
+        if (endIndex < formula.length()) {
+            char nextChar = formula.charAt(endIndex);
+            // 如果后面是范围操作符，这也是合法的单元格引用
+            if (nextChar == ':' || nextChar == ')' || nextChar == ',' || nextChar == '+' 
+                || nextChar == '-' || nextChar == '*' || nextChar == '/' || nextChar == ' ' 
+                || nextChar == '\t' || nextChar == '>' || nextChar == '<' || nextChar == '=') {
+                // 这些都是合法的单元格引用后续字符
+                return true;
             }
         }
         
