@@ -57,9 +57,9 @@ public class QuickStart {
         replacements3.put("E1", "目标!V1");
         replacements3.put("F1", "目标!U1");
         
-        String[] results3 = ExcelFormulaReplacer.replaceBatch(formulas, replacements3);
-        for (int i = 0; i < formulas.length; i++) {
-            System.out.println(formulas[i] + " → " + results3[i]);
+        String[] processedFormulas3 = ExcelFormulaReplacer.replaceBatch(formulas, replacements3);
+        for (int arrayIndex = 0; arrayIndex < formulas.length; arrayIndex++) {
+            System.out.println(formulas[arrayIndex] + " → " + processedFormulas3[arrayIndex]);
         }
         System.out.println();
         

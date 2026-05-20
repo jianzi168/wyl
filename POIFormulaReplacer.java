@@ -65,32 +65,32 @@ public class POIFormulaReplacer {
             return formula;
         }
         
-        try (Workbook dummyWorkbook = new XSSFWorkbook()) {
+        try (Workbook tempWorkbook = new XSSFWorkbook()) {
             // 解析公式
-            Ptg[] ptgs = FormulaParser.parse(formula, 
-                dummyWorkbook.getCreationHelper().createFormulaEvaluator().getWorkbook(), 
+            Ptg[] parsedTokens = FormulaParser.parse(formula, 
+                tempWorkbook.getCreationHelper().createFormulaEvaluator().getWorkbook(), 
                 FormulaParser.RANGE, 
                 0);
             
-            Map<String, String> refMap = new HashMap<>();
+            Map<String, String> replacementMap = new HashMap<>();
             boolean hasReplacement = false;
             
             // 遍历解析后的token，替换引用
-            for (Ptg ptg : ptgs) {
-                if (ptg instanceof RefPtg) {
-                    RefPtg ref = (RefPtg) ptg;
-                    String cellRef = ref.formatAsString();
+            for (Ptg currentToken : parsedTokens) {
+                if (currentToken instanceof RefPtg) {
+                    RefPtg referenceToken = (RefPtg) currentToken;
+                    String cellReference = referenceToken.formatAsString();
                     
-                    if (replacements.containsKey(cellRef)) {
-                        refMap.put(cellRef, replacements.get(cellRef));
+                    if (replacements.containsKey(cellReference)) {
+                        replacementMap.put(cellReference, replacements.get(cellReference));
                         hasReplacement = true;
                     }
-                } else if (ptg instanceof AreaPtg) {
-                    AreaPtg area = (AreaPtg) ptg;
-                    String areaRef = area.formatAsString();
+                } else if (currentToken instanceof AreaPtg) {
+                    AreaPtg areaToken = (AreaPtg) currentToken;
+                    String areaReference = areaToken.formatAsString();
                     
-                    if (replacements.containsKey(areaRef)) {
-                        refMap.put(areaRef, replacements.get(areaRef));
+                    if (replacements.containsKey(areaReference)) {
+                        replacementMap.put(areaReference, replacements.get(areaReference));
                         hasReplacement = true;
                     }
                 }
@@ -103,7 +103,7 @@ public class POIFormulaReplacer {
             
             // 渲染替换后的公式
             return FormulaRenderer.toFormulaString(
-                new SimpleRenderingWorkbook(refMap), ptgs);
+                new SimpleRenderingWorkbook(replacementMap), parsedTokens);
         }
     }
     
@@ -137,30 +137,30 @@ public class POIFormulaReplacer {
      * @throws Exception 解析异常
      */
     public static java.util.Set<String> extractCellReferences(String formula) throws Exception {
-        java.util.Set<String> references = new java.util.LinkedHashSet<>();
+        java.util.Set<String> cellReferences = new java.util.LinkedHashSet<>();
         
         if (formula == null || formula.isEmpty()) {
-            return references;
+            return cellReferences;
         }
         
-        try (Workbook dummyWorkbook = new XSSFWorkbook()) {
-            Ptg[] ptgs = FormulaParser.parse(formula, 
-                dummyWorkbook.getCreationHelper().createFormulaEvaluator().getWorkbook(), 
+        try (Workbook tempWorkbook = new XSSFWorkbook()) {
+            Ptg[] parsedTokens = FormulaParser.parse(formula, 
+                tempWorkbook.getCreationHelper().createFormulaEvaluator().getWorkbook(), 
                 FormulaParser.RANGE, 
                 0);
             
-            for (Ptg ptg : ptgs) {
-                if (ptg instanceof RefPtg) {
-                    RefPtg ref = (RefPtg) ptg;
-                    references.add(ref.formatAsString());
-                } else if (ptg instanceof AreaPtg) {
-                    AreaPtg area = (AreaPtg) ptg;
-                    references.add(area.formatAsString());
+            for (Ptg currentToken : parsedTokens) {
+                if (currentToken instanceof RefPtg) {
+                    RefPtg referenceToken = (RefPtg) currentToken;
+                    cellReferences.add(referenceToken.formatAsString());
+                } else if (currentToken instanceof AreaPtg) {
+                    AreaPtg areaToken = (AreaPtg) currentToken;
+                    cellReferences.add(areaToken.formatAsString());
                 }
             }
         }
         
-        return references;
+        return cellReferences;
     }
     
     /**
@@ -176,12 +176,12 @@ public class POIFormulaReplacer {
             return formulas;
         }
         
-        String[] results = new String[formulas.length];
-        for (int i = 0; i < formulas.length; i++) {
-            results[i] = replaceWithPOI(formulas[i], replacements);
+        String[] processedFormulas = new String[formulas.length];
+        for (int arrayIndex = 0; arrayIndex < formulas.length; arrayIndex++) {
+            processedFormulas[arrayIndex] = replaceWithPOI(formulas[arrayIndex], replacements);
         }
         
-        return results;
+        return processedFormulas;
     }
     
     /**
@@ -195,9 +195,9 @@ public class POIFormulaReplacer {
             return false;
         }
         
-        try (Workbook dummyWorkbook = new XSSFWorkbook()) {
+        try (Workbook tempWorkbook = new XSSFWorkbook()) {
             FormulaParser.parse(formula, 
-                dummyWorkbook.getCreationHelper().createFormulaEvaluator().getWorkbook(), 
+                tempWorkbook.getCreationHelper().createFormulaEvaluator().getWorkbook(), 
                 FormulaParser.RANGE, 
                 0);
             return true;

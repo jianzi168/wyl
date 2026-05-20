@@ -42,33 +42,33 @@ public class PerformanceDemo {
         System.out.println("----------------------------------------");
         System.out.println("方案1: 预编译正则表达式");
         System.out.println("----------------------------------------");
-        long start = System.nanoTime();
-        String result1 = ExcelFormulaReplacer.replaceCellReferences(formula, replacements);
-        long time1 = System.nanoTime() - start;
-        System.out.println("替换结果: " + result1);
-        System.out.println("单次耗时: " + time1 / 1000.0 + " μs");
+        long startTime = System.nanoTime();
+        String regexResult = ExcelFormulaReplacer.replaceCellReferences(formula, replacements);
+        long regexDuration = System.nanoTime() - startTime;
+        System.out.println("替换结果: " + regexResult);
+        System.out.println("单次耗时: " + regexDuration / 1000.0 + " μs");
         System.out.println();
         
         // 方案2：精确版本（避开函数名）
         System.out.println("----------------------------------------");
         System.out.println("方案2: 精确正则（避开函数名）");
         System.out.println("----------------------------------------");
-        start = System.nanoTime();
-        String result2 = ExcelFormulaReplacer.PreciseReplacer.replace(formula, replacements);
-        long time2 = System.nanoTime() - start;
-        System.out.println("替换结果: " + result2);
-        System.out.println("单次耗时: " + time2 / 1000.0 + " μs");
+        startTime = System.nanoTime();
+        String preciseResult = ExcelFormulaReplacer.PreciseReplacer.replace(formula, replacements);
+        long preciseDuration = System.nanoTime() - startTime;
+        System.out.println("替换结果: " + preciseResult);
+        System.out.println("单次耗时: " + preciseDuration / 1000.0 + " μs");
         System.out.println();
         
         // 方案3：手动解析
         System.out.println("----------------------------------------");
         System.out.println("方案3: 手动遍历解析");
         System.out.println("----------------------------------------");
-        start = System.nanoTime();
-        String result3 = FormulaParser.replaceReferences(formula, replacements);
-        long time3 = System.nanoTime() - start;
-        System.out.println("替换结果: " + result3);
-        System.out.println("单次耗时: " + time3 / 1000.0 + " μs");
+        startTime = System.nanoTime();
+        String manualResult = FormulaParser.replaceReferences(formula, replacements);
+        long manualDuration = System.nanoTime() - startTime;
+        System.out.println("替换结果: " + manualResult);
+        System.out.println("单次耗时: " + manualDuration / 1000.0 + " μs");
         System.out.println();
         
         // 提取单元格引用
@@ -127,41 +127,41 @@ public class PerformanceDemo {
      */
     private static void benchmarkBatch(String formula, Map<String, String> replacements, int iterations) {
         // 预热
-        for (int i = 0; i < 1000; i++) {
+        for (int warmupIndex = 0; warmupIndex < 1000; warmupIndex++) {
             ExcelFormulaReplacer.replaceCellReferences(formula, replacements);
             FormulaParser.replaceReferences(formula, replacements);
         }
         
         // 测试正则方案
-        long start = System.nanoTime();
-        for (int i = 0; i < iterations; i++) {
+        long startTime = System.nanoTime();
+        for (int iterationIndex = 0; iterationIndex < iterations; iterationIndex++) {
             ExcelFormulaReplacer.replaceCellReferences(formula, replacements);
         }
-        long regexTime = System.nanoTime() - start;
+        long regexBenchmarkTime = System.nanoTime() - startTime;
         
         // 测试精确正则方案
-        start = System.nanoTime();
-        for (int i = 0; i < iterations; i++) {
+        startTime = System.nanoTime();
+        for (int iterationIndex = 0; iterationIndex < iterations; iterationIndex++) {
             ExcelFormulaReplacer.PreciseReplacer.replace(formula, replacements);
         }
-        long preciseTime = System.nanoTime() - start;
+        long preciseBenchmarkTime = System.nanoTime() - startTime;
         
         // 测试手动解析方案
-        start = System.nanoTime();
-        for (int i = 0; i < iterations; i++) {
+        startTime = System.nanoTime();
+        for (int iterationIndex = 0; iterationIndex < iterations; iterationIndex++) {
             FormulaParser.replaceReferences(formula, replacements);
         }
-        long manualTime = System.nanoTime() - start;
+        long manualBenchmarkTime = System.nanoTime() - startTime;
         
         System.out.printf("正则方案  : %5d ms (平均 %6.2f μs/次)\n",
-            TimeUnit.NANOSECONDS.toMillis(regexTime),
-            regexTime / (iterations * 1000.0));
+            TimeUnit.NANOSECONDS.toMillis(regexBenchmarkTime),
+            regexBenchmarkTime / (iterations * 1000.0));
         System.out.printf("精确正则  : %5d ms (平均 %6.2f μs/次)\n",
-            TimeUnit.NANOSECONDS.toMillis(preciseTime),
-            preciseTime / (iterations * 1000.0));
+            TimeUnit.NANOSECONDS.toMillis(preciseBenchmarkTime),
+            preciseBenchmarkTime / (iterations * 1000.0));
         System.out.printf("手动解析  : %5d ms (平均 %6.2f μs/次)\n",
-            TimeUnit.NANOSECONDS.toMillis(manualTime),
-            manualTime / (iterations * 1000.0));
+            TimeUnit.NANOSECONDS.toMillis(manualBenchmarkTime),
+            manualBenchmarkTime / (iterations * 1000.0));
     }
     
     /**
@@ -169,9 +169,9 @@ public class PerformanceDemo {
      */
     private static void benchmarkBatchFormulas(int formulaCount, int iterations) {
         // 生成测试公式
-        String[] formulas = new String[formulaCount];
-        for (int i = 0; i < formulaCount; i++) {
-            formulas[i] = "=A" + (i + 1) + "+B" + (i + 1) + "*C" + (i + 1);
+        String[] testFormulas = new String[formulaCount];
+        for (int formulaIndex = 0; formulaIndex < formulaCount; formulaIndex++) {
+            testFormulas[formulaIndex] = "=A" + (formulaIndex + 1) + "+B" + (formulaIndex + 1) + "*C" + (formulaIndex + 1);
         }
         
         Map<String, String> replacements = new HashMap<>();
@@ -180,32 +180,32 @@ public class PerformanceDemo {
         replacements.put("C1", "Z1");
         
         // 预热
-        for (int i = 0; i < 100; i++) {
-            ExcelFormulaReplacer.replaceCellReferences(formulas[0], replacements);
-            FormulaParser.replaceReferences(formulas[0], replacements);
+        for (int warmupIndex = 0; warmupIndex < 100; warmupIndex++) {
+            ExcelFormulaReplacer.replaceCellReferences(testFormulas[0], replacements);
+            FormulaParser.replaceReferences(testFormulas[0], replacements);
         }
         
         // 测试正则批量方案
-        long start = System.nanoTime();
-        for (int i = 0; i < iterations; i++) {
-            ExcelFormulaReplacer.replaceBatch(formulas, replacements);
+        long startTime = System.nanoTime();
+        for (int iterationIndex = 0; iterationIndex < iterations; iterationIndex++) {
+            ExcelFormulaReplacer.replaceBatch(testFormulas, replacements);
         }
-        long regexTime = System.nanoTime() - start;
+        long regexBatchTime = System.nanoTime() - startTime;
         
         // 测试手动解析批量方案
-        start = System.nanoTime();
-        for (int i = 0; i < iterations; i++) {
-            FormulaParser.replaceBatch(formulas, replacements);
+        startTime = System.nanoTime();
+        for (int iterationIndex = 0; iterationIndex < iterations; iterationIndex++) {
+            FormulaParser.replaceBatch(testFormulas, replacements);
         }
-        long manualTime = System.nanoTime() - start;
+        long manualBatchTime = System.nanoTime() - startTime;
         
         int totalOps = formulaCount * iterations;
         System.out.printf("正则批量  : %5d ms (平均 %6.2f μs/个)\n",
-            TimeUnit.NANOSECONDS.toMillis(regexTime),
-            regexTime / (totalOps * 1000.0));
+            TimeUnit.NANOSECONDS.toMillis(regexBatchTime),
+            regexBatchTime / (totalOps * 1000.0));
         System.out.printf("手动批量  : %5d ms (平均 %6.2f μs/个)\n",
-            TimeUnit.NANOSECONDS.toMillis(manualTime),
-            manualTime / (totalOps * 1000.0));
+            TimeUnit.NANOSECONDS.toMillis(manualBatchTime),
+            manualBatchTime / (totalOps * 1000.0));
     }
     
     // 单独测试方法（用于表格输出）

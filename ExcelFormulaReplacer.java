@@ -64,23 +64,23 @@ public class ExcelFormulaReplacer {
             return formula;
         }
         
-        Matcher matcher = CELL_PATTERN.matcher(formula);
-        StringBuffer result = new StringBuffer(formula.length() + 16);
+        Matcher formulaMatcher = CELL_PATTERN.matcher(formula);
+        StringBuffer processedResult = new StringBuffer(formula.length() + 16);
         
-        while (matcher.find()) {
-            String cellRef = matcher.group(1);
-            String replacement = replacements.get(cellRef);
+        while (formulaMatcher.find()) {
+            String cellReference = formulaMatcher.group(1);
+            String replacementValue = replacements.get(cellReference);
             
-            if (replacement != null) {
-                matcher.appendReplacement(result, Matcher.quoteReplacement(replacement));
+            if (replacementValue != null) {
+                formulaMatcher.appendReplacement(processedResult, Matcher.quoteReplacement(replacementValue));
             } else {
                 // 保持原样
-                matcher.appendReplacement(result, Matcher.quoteReplacement(cellRef));
+                formulaMatcher.appendReplacement(processedResult, Matcher.quoteReplacement(cellReference));
             }
         }
-        matcher.appendTail(result);
+        formulaMatcher.appendTail(processedResult);
         
-        return result.toString();
+        return processedResult.toString();
     }
     
     /**
@@ -106,28 +106,28 @@ public class ExcelFormulaReplacer {
                 return formula;
             }
             
-            // 先标记函数名位置（临时替换）
-            String temp = FUNCTION_NAME_PATTERN.matcher(formula)
-                .replaceAll(mr -> "\u0000FN:" + mr.group(1) + "\u0000");
+        // 先标记函数名位置（临时替换）
+        String formulaWithMarkers = FUNCTION_NAME_PATTERN.matcher(formula)
+            .replaceAll(mr -> "\u0000FN:" + mr.group(1) + "\u0000");
+        
+        // 执行单元格引用替换
+        Matcher formulaMatcher = CELL_PATTERN.matcher(formulaWithMarkers);
+        StringBuffer processedResult = new StringBuffer(formulaWithMarkers.length() + 16);
+        
+        while (formulaMatcher.find()) {
+            String cellReference = formulaMatcher.group(1);
+            String replacementValue = replacements.get(cellReference);
             
-            // 执行单元格引用替换
-            Matcher matcher = CELL_PATTERN.matcher(temp);
-            StringBuffer result = new StringBuffer(temp.length() + 16);
-            
-            while (matcher.find()) {
-                String cellRef = matcher.group(1);
-                String replacement = replacements.get(cellRef);
-                
-                if (replacement != null) {
-                    matcher.appendReplacement(result, Matcher.quoteReplacement(replacement));
-                } else {
-                    matcher.appendReplacement(result, Matcher.quoteReplacement(cellRef));
-                }
+            if (replacementValue != null) {
+                formulaMatcher.appendReplacement(processedResult, Matcher.quoteReplacement(replacementValue));
+            } else {
+                formulaMatcher.appendReplacement(processedResult, Matcher.quoteReplacement(cellReference));
             }
-            matcher.appendTail(result);
-            
-            // 恢复函数名
-            return result.toString().replace("\u0000FN:", "").replace("\u0000", "");
+        }
+        formulaMatcher.appendTail(processedResult);
+        
+        // 恢复函数名
+        return processedResult.toString().replace("\u0000FN:", "").replace("\u0000", "");
         }
     }
     
@@ -143,11 +143,11 @@ public class ExcelFormulaReplacer {
             return formulas;
         }
         
-        String[] results = new String[formulas.length];
-        for (int i = 0; i < formulas.length; i++) {
-            results[i] = replaceCellReferences(formulas[i], replacements);
+        String[] processedFormulas = new String[formulas.length];
+        for (int arrayIndex = 0; arrayIndex < formulas.length; arrayIndex++) {
+            processedFormulas[arrayIndex] = replaceCellReferences(formulas[arrayIndex], replacements);
         }
         
-        return results;
+        return processedFormulas;
     }
 }

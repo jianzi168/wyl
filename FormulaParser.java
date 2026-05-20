@@ -31,53 +31,53 @@ public class FormulaParser {
             return formula;
         }
         
-        StringBuilder result = new StringBuilder(formula.length() + 32);
-        int len = formula.length();
-        int i = 0;
+        StringBuilder resultBuilder = new StringBuilder(formula.length() + 32);
+        int formulaLength = formula.length();
+        int currentPosition = 0;
         
-        while (i < len) {
-            char c = formula.charAt(i);
+        while (currentPosition < formulaLength) {
+            char currentChar = formula.charAt(currentPosition);
             
             // 跳过非字母字符
-            if (!isLetter(c)) {
-                result.append(c);
-                i++;
+            if (!isLetter(currentChar)) {
+                resultBuilder.append(currentChar);
+                currentPosition++;
                 continue;
             }
             
             // 检查是否是单元格引用（字母+数字）
-            int start = i;
-            while (i < len && isLetter(formula.charAt(i))) {
-                i++;
+            int startIndex = currentPosition;
+            while (currentPosition < formulaLength && isLetter(formula.charAt(currentPosition))) {
+                currentPosition++;
             }
             
-            int letterEnd = i;
+            int letterEndIndex = currentPosition;
             
             // 如果没有字母或字母后面没有数字，直接添加
-            if (letterEnd == start || letterEnd >= len || !isDigit(formula.charAt(letterEnd))) {
-                result.append(formula, start, i);
+            if (letterEndIndex == startIndex || letterEndIndex >= formulaLength || !isDigit(formula.charAt(letterEndIndex))) {
+                resultBuilder.append(formula, startIndex, currentPosition);
                 continue;
             }
             
             // 读取数字部分
-            while (i < len && isDigit(formula.charAt(i))) {
-                i++;
+            while (currentPosition < formulaLength && isDigit(formula.charAt(currentPosition))) {
+                currentPosition++;
             }
             
-            String cellRef = formula.substring(start, i);
+            String cellReference = formula.substring(startIndex, currentPosition);
             
             // 检查边界：确保不是函数名的一部分
-            boolean isCellReference = isCellRef(formula, start, i);
+            boolean isCellReference = isCellRef(formula, startIndex, currentPosition);
             
             if (isCellReference) {
-                String replacement = replacements.get(cellRef);
-                result.append(replacement != null ? replacement : cellRef);
+                String replacementValue = replacements.get(cellReference);
+                resultBuilder.append(replacementValue != null ? replacementValue : cellReference);
             } else {
-                result.append(cellRef);
+                resultBuilder.append(cellReference);
             }
         }
         
-        return result.toString();
+        return resultBuilder.toString();
     }
     
     /**
@@ -89,20 +89,21 @@ public class FormulaParser {
      * @param end 匹配结束位置
      * @return true如果是单元格引用，false如果是函数名
      */
-    private static boolean isCellRef(String formula, int start, int end) {
+    private static boolean isCellRef(String formula, int startIndex, int endIndex) {
         // 检查前一个字符
-        if (start > 0) {
-            char prev = formula.charAt(start - 1);
+        if (startIndex > 0) {
+            char previousChar = formula.charAt(startIndex - 1);
             // 如果前面是'('或','或空格，可能是函数名或参数
-            if (prev == '(' || prev == ',' || prev == ' ' || prev == '\t') {
+            if (previousChar == '(' || previousChar == ',' || previousChar == ' ' || previousChar == '\t') {
                 // 再检查前面是否有'=','+','-','*','/'或':'
                 boolean foundOperator = false;
-                for (int j = start - 2; j >= 0; j--) {
-                    char c = formula.charAt(j);
-                    if (c == '=' || c == '+' || c == '-' || c == '*' || c == '/' || c == ':' || c == '(' || c == ',') {
+                for (int searchIndex = startIndex - 2; searchIndex >= 0; searchIndex--) {
+                    char searchChar = formula.charAt(searchIndex);
+                    if (searchChar == '=' || searchChar == '+' || searchChar == '-' || searchChar == '*' 
+                        || searchChar == '/' || searchChar == ':' || searchChar == '(' || searchChar == ',') {
                         foundOperator = true;
                         break;
-                    } else if (c != ' ' && c != '\t') {
+                    } else if (searchChar != ' ' && searchChar != '\t') {
                         // 如果遇到非空白字符且不是操作符，可能是函数名
                         return false;
                     }
@@ -146,12 +147,12 @@ public class FormulaParser {
             return formulas;
         }
         
-        String[] results = new String[formulas.length];
-        for (int i = 0; i < formulas.length; i++) {
-            results[i] = replaceReferences(formulas[i], replacements);
+        String[] processedFormulas = new String[formulas.length];
+        for (int arrayIndex = 0; arrayIndex < formulas.length; arrayIndex++) {
+            processedFormulas[arrayIndex] = replaceReferences(formulas[arrayIndex], replacements);
         }
         
-        return results;
+        return processedFormulas;
     }
     
     /**
@@ -161,42 +162,42 @@ public class FormulaParser {
      * @return 单元格引用集合
      */
     public static java.util.Set<String> extractCellReferences(String formula) {
-        java.util.Set<String> references = new java.util.LinkedHashSet<>();
+        java.util.Set<String> cellReferences = new java.util.LinkedHashSet<>();
         
         if (formula == null || formula.isEmpty()) {
-            return references;
+            return cellReferences;
         }
         
-        int len = formula.length();
-        int i = 0;
+        int formulaLength = formula.length();
+        int currentPosition = 0;
         
-        while (i < len) {
-            if (!isLetter(formula.charAt(i))) {
-                i++;
+        while (currentPosition < formulaLength) {
+            if (!isLetter(formula.charAt(currentPosition))) {
+                currentPosition++;
                 continue;
             }
             
-            int start = i;
-            while (i < len && isLetter(formula.charAt(i))) {
-                i++;
+            int startIndex = currentPosition;
+            while (currentPosition < formulaLength && isLetter(formula.charAt(currentPosition))) {
+                currentPosition++;
             }
             
-            int letterEnd = i;
+            int letterEndIndex = currentPosition;
             
-            if (letterEnd == start || letterEnd >= len || !isDigit(formula.charAt(letterEnd))) {
+            if (letterEndIndex == startIndex || letterEndIndex >= formulaLength || !isDigit(formula.charAt(letterEndIndex))) {
                 continue;
             }
             
-            while (i < len && isDigit(formula.charAt(i))) {
-                i++;
+            while (currentPosition < formulaLength && isDigit(formula.charAt(currentPosition))) {
+                currentPosition++;
             }
             
-            String cellRef = formula.substring(start, i);
-            if (isCellRef(formula, start, i)) {
-                references.add(cellRef);
+            String cellReference = formula.substring(startIndex, currentPosition);
+            if (isCellRef(formula, startIndex, currentPosition)) {
+                cellReferences.add(cellReference);
             }
         }
         
-        return references;
+        return cellReferences;
     }
 }
