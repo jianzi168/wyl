@@ -85,34 +85,85 @@ public class FormulaParser {
      * 通过检查前后文判断是函数名还是单元格引用
      * 
      * @param formula 完整公式
-     * @param start 匹配起始位置
-     * @param end 匹配结束位置
+     * @param startIndex 匹配起始位置
+     * @param endIndex 匹配结束位置
      * @return true如果是单元格引用，false如果是函数名
      */
     private static boolean isCellRef(String formula, int startIndex, int endIndex) {
         // 检查前一个字符
         if (startIndex > 0) {
             char previousChar = formula.charAt(startIndex - 1);
+            
             // 如果前面是'('或','或空格，可能是函数名或参数
             if (previousChar == '(' || previousChar == ',' || previousChar == ' ' || previousChar == '\t') {
-                // 再检查前面是否有'=','+','-','*','/'或':'
+                // 向前搜索，判断是否为函数调用中的参数
                 boolean foundOperator = false;
+                boolean foundNonWhitespace = false;
+                
                 for (int searchIndex = startIndex - 2; searchIndex >= 0; searchIndex--) {
                     char searchChar = formula.charAt(searchIndex);
+                    
                     if (searchChar == '=' || searchChar == '+' || searchChar == '-' || searchChar == '*' 
                         || searchChar == '/' || searchChar == ':' || searchChar == '(' || searchChar == ',') {
+                        // 找到操作符或函数开始，说明这是单元格引用
                         foundOperator = true;
                         break;
                     } else if (searchChar != ' ' && searchChar != '\t') {
-                        // 如果遇到非空白字符且不是操作符，可能是函数名
-                        return false;
+                        // 遇到非空白字符，可能是函数名的一部分
+                        foundNonWhitespace = true;
                     }
                 }
-                return foundOperator;
+                
+                // 如果找到操作符，或者是公式开头，则是单元格引用
+                if (foundOperator || !foundNonWhitespace) {
+                    return true;
+                }
+                
+                // 检查是否是连续的字母（可能是函数名）
+                // 从startIndex向前读取字母，看是否构成有效函数名
+                if (isLikelyFunctionName(formula, startIndex - 1)) {
+                    return false;  // 是函数名，不是单元格引用
+                }
+                
+                return true;  // 不是函数名，是单元格引用
             }
         }
         
         return true;
+    }
+    
+    /**
+     * 检查从指定位置向前是否构成函数名
+     * 
+     * @param formula 公式
+     * @param endIndex 结束位置（不包括）
+     * @return true如果是函数名
+     */
+    private static boolean isLikelyFunctionName(String formula, int endIndex) {
+        int startIndex = endIndex;
+        
+        // 向前读取字母
+        while (startIndex >= 0 && isLetter(formula.charAt(startIndex))) {
+            startIndex--;
+        }
+        
+        // 如果前面不是字母或数字，且读取到字母，可能是函数名
+        if (startIndex < endIndex && (startIndex < 0 || !isDigit(formula.charAt(startIndex)))) {
+            String potentialName = formula.substring(startIndex + 1, endIndex);
+            // 检查是否在已知的Excel函数列表中（可以扩展）
+            String[] excelFunctions = {"SUM", "AVERAGE", "IF", "MAX", "MIN", "VLOOKUP", 
+                "INDEX", "MATCH", "COUNT", "ROUND", "ABS", "SQRT", "POWER", "LEN", 
+                "LEFT", "RIGHT", "MID", "FIND", "SEARCH", "AND", "OR", "NOT", 
+                "CHOOSE", "HLOOKUP", "LOOKUP", "OFFSET", "INDIRECT", "ADDRESS"};
+            
+            for (String function : excelFunctions) {
+                if (function.equals(potentialName)) {
+                    return true;
+                }
+            }
+        }
+        
+        return false;
     }
     
     /**
