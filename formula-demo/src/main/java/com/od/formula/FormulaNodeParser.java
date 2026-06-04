@@ -10,7 +10,8 @@ import java.util.Set;
  * 解析类 Excel 公式中的单元格结点坐标。
  * <p>
  * 本表结点：{@code B5}、{@code G6}、{@code D2} 等当前工作表引用。<br>
- * 跨表结点：{@code 表单1!B5}、{@code form1!G6}、{@code 'Sheet Name'!A1} 等带工作表前缀的引用。
+ * 跨表结点：{@code 表单1!B5}、{@code form1!G6}、{@code 'Sheet Name'!A1} 等带工作表前缀的引用。<br>
+ * 特殊跨表结点：{@code !987}、{@code !9999} 等以 {@code !} 开头、前面无工作表名的引用。
  * <p>
  * 循环场景请使用 {@link ReusableParser}，可复用内部缓冲与集合并避免重复扫描。
  */
@@ -76,6 +77,21 @@ public final class FormulaNodeParser {
     }
 
     /**
+     * 返回公式中的特殊跨表结点集合。
+     * <p>
+     * 特殊跨表引用以 {@code !} 开头且前面没有工作表名，如 {@code !987}、{@code !9999}。
+     * 返回值不含 {@code !}，例如 {@code 987}、{@code 9999}。
+     */
+    public static Set<String> getSpecialCrossSheetNodes(String formulaText) {
+        Objects.requireNonNull(formulaText, "formulaText");
+        var specialCrossSheetNodeSet = new LinkedHashSet<String>(DEFAULT_CROSS_SHEET_NODE_CAPACITY);
+        var formulaScanner = new FormulaScanner();
+        formulaScanner.reset(formulaText, null, null, null, specialCrossSheetNodeSet);
+        formulaScanner.scan();
+        return Collections.unmodifiableSet(specialCrossSheetNodeSet);
+    }
+
+    /**
      * 可复用解析器，适用于循环调用。
      * <p>
      * {@link #parse(String)} 始终返回同一 {@link FormulaNodes} 实例；
@@ -96,7 +112,7 @@ public final class FormulaNodeParser {
             localNodeSet.clear();
             crossSheetNodeSet.clear();
             allNodeSet.clear();
-            formulaScanner.reset(formulaText, localNodeSet, crossSheetNodeSet, allNodeSet);
+            formulaScanner.reset(formulaText, localNodeSet, crossSheetNodeSet, allNodeSet, null);
             formulaScanner.scan();
             return cachedParseResult;
         }
@@ -108,7 +124,7 @@ public final class FormulaNodeParser {
             Set<String> crossSheetNodeSet,
             Set<String> allNodeSet) {
         var formulaScanner = new FormulaScanner();
-        formulaScanner.reset(formulaText, localNodeSet, crossSheetNodeSet, allNodeSet);
+        formulaScanner.reset(formulaText, localNodeSet, crossSheetNodeSet, allNodeSet, null);
         formulaScanner.scan();
     }
 
@@ -122,16 +138,19 @@ public final class FormulaNodeParser {
         private Set<String> localNodeSet;
         private Set<String> crossSheetNodeSet;
         private Set<String> allNodeSet;
+        private Set<String> specialCrossSheetNodeSet;
         private char[] cellAddressBuffer = new char[DEFAULT_ADDRESS_BUFFER_SIZE];
 
         void reset(
                 String formulaText,
                 Set<String> localNodeSet,
                 Set<String> crossSheetNodeSet,
-                Set<String> allNodeSet) {
+                Set<String> allNodeSet,
+                Set<String> specialCrossSheetNodeSet) {
             this.localNodeSet = localNodeSet;
             this.crossSheetNodeSet = crossSheetNodeSet;
             this.allNodeSet = allNodeSet;
+            this.specialCrossSheetNodeSet = specialCrossSheetNodeSet;
             this.currentIndex = 0;
             loadNormalizedFormulaChars(formulaText);
         }
@@ -223,6 +242,9 @@ public final class FormulaNodeParser {
         }
 
         private boolean consumeOtherCharacter(char currentChar) {
+            if (currentChar == '!') {
+                return consumeSpecialCrossSheetReference();
+            }
             if (isOperator(currentChar)) {
                 currentIndex++;
                 return true;
@@ -235,6 +257,40 @@ public final class FormulaNodeParser {
                 return consumeIdentifierSegment();
             }
             return false;
+        }
+
+        /**
+         * 处理特殊跨表引用 {@code !987}，或在不收集时跳过以免后续误解析。
+         */
+        private boolean consumeSpecialCrossSheetReference() {
+            if (tryParseSpecialCrossSheetReference()) {
+                return true;
+            }
+            currentIndex++;
+            return true;
+        }
+
+        /**
+         * 解析 {@code !} 开头的特殊跨表结点（前面无工作表名），如 {@code !987}、{@code !9999}。
+         */
+        private boolean tryParseSpecialCrossSheetReference() {
+            return attemptParse(() -> {
+                if (formulaChars[currentIndex] != '!') {
+                    return false;
+                }
+                int tokenStart = currentIndex;
+                currentIndex++;
+                int nodeIdStart = currentIndex;
+                skipSpecialCrossSheetNodeCharacters();
+                if (currentIndex == nodeIdStart) {
+                    return false;
+                }
+                if (specialCrossSheetNodeSet != null) {
+                    // tokenStart 指向 '!'，结点标识从其后一位开始
+                    specialCrossSheetNodeSet.add(new String(formulaChars, tokenStart + 1, currentIndex - tokenStart - 1));
+                }
+                return true;
+            });
         }
 
         /** 依次尝试跨表引用、本表引用、函数调用；均失败则跳过普通标识符。 */
@@ -446,14 +502,30 @@ public final class FormulaNodeParser {
         }
 
         private void recordLocalNode(String cellAddress) {
+            if (localNodeSet == null) {
+                return;
+            }
             localNodeSet.add(cellAddress);
-            allNodeSet.add(cellAddress);
+            if (allNodeSet != null) {
+                allNodeSet.add(cellAddress);
+            }
         }
 
         private void recordCrossSheetNode(String sheetName, String cellAddress) {
+            if (crossSheetNodeSet == null) {
+                return;
+            }
             String crossSheetReference = sheetName + '!' + cellAddress;
             crossSheetNodeSet.add(crossSheetReference);
-            allNodeSet.add(crossSheetReference);
+            if (allNodeSet != null) {
+                allNodeSet.add(crossSheetReference);
+            }
+        }
+
+        private void skipSpecialCrossSheetNodeCharacters() {
+            while (currentIndex < contentLength && isSpecialCrossSheetNodeChar(formulaChars[currentIndex])) {
+                currentIndex++;
+            }
         }
 
         private void skipWhitespace() {
@@ -564,6 +636,12 @@ public final class FormulaNodeParser {
                     || character == '.' || character > 127;
         }
 
+        /** 特殊跨表结点标识符：{@code !} 后紧跟的编号或名称。 */
+        private static boolean isSpecialCrossSheetNodeChar(char character) {
+            return isColumnLetter(character) || isDigit(character) || character == '_'
+                    || character > 127;
+        }
+
         private static boolean isColumnLetter(char character) {
             return (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z');
         }
@@ -587,6 +665,7 @@ public final class FormulaNodeParser {
     public static void main(String[] args) {
         var sampleFormulas = List.of(
                 "=B5+G6+SUM(D2:D9)",
+                "=!987+!9999+SUM(D2:D9)",
                 "=表单1!B5+form1!G6+SUM(D2:D9)",
                 "=IF(A1>0,表单1!C3,SUM('Data Sheet'!E2:E10))",
                 "=VLOOKUP(B2,form1!A1:D99,3,FALSE)+$D$2");
@@ -595,9 +674,10 @@ public final class FormulaNodeParser {
         for (var formulaText : sampleFormulas) {
             var parseResult = reusableParser.parse(formulaText);
             System.out.println("formula: " + formulaText);
-            System.out.println("  local: " + parseResult.localNodes());
-            System.out.println("  cross: " + parseResult.crossSheetNodes());
-            System.out.println("  all:   " + parseResult.allNodes());
+            System.out.println("  local:   " + parseResult.localNodes());
+            System.out.println("  cross:   " + parseResult.crossSheetNodes());
+            System.out.println("  special: " + getSpecialCrossSheetNodes(formulaText));
+            System.out.println("  all:     " + parseResult.allNodes());
         }
     }
 }
