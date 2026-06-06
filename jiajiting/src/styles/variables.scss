@@ -1,0 +1,47 @@
+/** 家计通设计 Token — v2.0 */
+
+// 品牌色
+$color-primary: #6c5ce7;
+$color-primary-light: #a29bfe;
+$color-primary-gradient: linear-gradient(135deg, #6c5ce7 0%, #a29bfe 100%);
+
+// 语义色
+$color-income: #00b894;
+$color-expense: #ff6b6b;
+$color-warning: #fdcb6e;
+$color-danger: #d63031;
+$color-success: #00b894;
+
+// 性质色
+$color-nature-rigid: #ff6b6b;
+$color-nature-optional: #fdcb6e;
+$color-nature-luxury: #00b894;
+
+// 中性色
+$color-text-primary: #2d3436;
+$color-text-secondary: #636e72;
+$color-text-muted: #b2bec3;
+$color-bg-page: #f5f6fa;
+$color-bg-card: #ffffff;
+$color-border: #dfe6e9;
+
+// 圆角
+$radius-sm: 8rpx;
+$radius-md: 16rpx;
+$radius-lg: 24rpx;
+$radius-full: 999rpx;
+
+// 间距
+$spacing-xs: 8rpx;
+$spacing-sm: 16rpx;
+$spacing-md: 24rpx;
+$spacing-lg: 32rpx;
+$spacing-xl: 48rpx;
+
+// 字号
+$font-size-xs: 22rpx;
+$font-size-sm: 24rpx;
+$font-size-md: 28rpx;
+$font-size-lg: 32rpx;
+$font-size-xl: 40rpx;
+$font-size-xxl: 56rpx;

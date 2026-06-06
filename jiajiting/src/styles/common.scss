@@ -1,0 +1,29 @@
+@import './variables.scss';
+
+page {
+  background-color: $color-bg-page;
+  color: $color-text-primary;
+  font-size: $font-size-md;
+  box-sizing: border-box;
+}
+
+.card {
+  background: $color-bg-card;
+  border-radius: $radius-md;
+  padding: $spacing-md;
+  box-shadow: 0 4rpx 24rpx rgba(0, 0, 0, 0.04);
+}
+
+.text-secondary {
+  color: $color-text-secondary;
+}
+
+.text-muted {
+  color: $color-text-muted;
+}
+
+.gradient-header {
+  background: $color-primary-gradient;
+  color: #fff;
+  border-radius: $radius-md;
+}

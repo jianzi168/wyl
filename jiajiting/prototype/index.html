@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>家计通 · 交互原型 v2.1</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="layout">
+  <!-- 左侧：页面地图 -->
+  <aside class="sidebar">
+    <h1>家计通</h1>
+    <p class="ver">交互原型 v2.1 · 27 页面</p>
+
+    <h2>启动流程</h2>
+    <div class="nav-group">
+      <button class="nav-item" data-screen="login">登录</button>
+      <button class="nav-item" data-screen="onboarding">预算引导</button>
+      <button class="nav-item" data-screen="bind-phone">绑定手机</button>
+    </div>
+
+    <h2>Tab · 记账</h2>
+    <div class="nav-group">
+      <button class="nav-item" data-screen="record">首页 Dashboard</button>
+      <button class="nav-item" data-screen="quick">记一笔</button>
+      <button class="nav-item" data-screen="feedback">记账反馈</button>
+      <button class="nav-item" data-screen="import">导入账单</button>
+      <button class="nav-item" data-screen="import-confirm">确认导入</button>
+    </div>
+
+    <h2>Tab · 报表</h2>
+    <div class="nav-group">
+      <button class="nav-item" data-screen="report">报表首页</button>
+      <button class="nav-item" data-screen="detail">支出明细</button>
+      <button class="nav-item" data-screen="weekly">周报</button>
+      <button class="nav-item" data-screen="monthly">月报热力图</button>
+    </div>
+
+    <h2>Tab · 洞察</h2>
+    <div class="nav-group">
+      <button class="nav-item" data-screen="savings">省钱洞察</button>
+      <button class="nav-item" data-screen="coupons">优惠券中心</button>
+      <button class="nav-item" data-screen="insights">洞察 Inbox</button>
+      <button class="nav-item" data-screen="coach">AI 财务教练</button>
+    </div>
+
+    <h2>Tab · 工具</h2>
+    <div class="nav-group">
+      <button class="nav-item" data-screen="tools">房贷/车贷计算器</button>
+    </div>
+
+    <h2>Tab · 我的</h2>
+    <div class="nav-group">
+      <button class="nav-item" data-screen="profile">我的</button>
+      <button class="nav-item" data-screen="budget">预算设置</button>
+      <button class="nav-item" data-screen="categories">分类管理</button>
+      <button class="nav-item" data-screen="recurring">固定收支</button>
+      <button class="nav-item" data-screen="family">家庭共享</button>
+      <button class="nav-item" data-screen="family-summary">家庭汇总</button>
+      <button class="nav-item" data-screen="subscription">高级版</button>
+      <button class="nav-item" data-screen="reminder">记账提醒</button>
+      <button class="nav-item" data-screen="privacy">隐私与数据</button>
+      <button class="nav-item" data-screen="achievements">成就徽章</button>
+    </div>
+
+    <p class="flow-tip">
+      💡 推荐体验路径：<br>
+      登录 → 引导 → 记账 → 记一笔 → 反馈 → 报表 → 洞察 → 工具 → 我的
+    </p>
+  </aside>
+
+  <!-- 中间：手机原型 -->
+  <div class="phone-wrap">
+    <p class="phone-label">iPhone 15 视图 · 375×812</p>
+    <div class="phone">
+      <div class="notch" id="notch-title">家计通</div>
+      <div class="screen-area" id="screen-area"></div>
+      <div class="tab-bar" id="tab-bar">
+        <button class="tab-btn" data-tab="record"><span class="icon">📝</span>记账</button>
+        <button class="tab-btn" data-tab="report"><span class="icon">📊</span>报表</button>
+        <button class="tab-btn" data-tab="savings"><span class="icon">💡</span>洞察</button>
+        <button class="tab-btn" data-tab="tools"><span class="icon">🔧</span>工具</button>
+        <button class="tab-btn" data-tab="profile"><span class="icon">👤</span>我的</button>
+      </div>
+      <div class="toast" id="toast"></div>
+    </div>
+    <button id="btn-back" class="btn btn-ghost" style="margin-top:16px;width:200px;">← 返回上一页</button>
+  </div>
+
+  <!-- 右侧：交互日志 -->
+  <aside class="interaction-panel">
+    <h2>当前页面</h2>
+    <div id="screen-name">登录</div>
+    <div id="screen-path">pages/auth/login</div>
+
+    <h2 style="margin-top:20px;">交互日志</h2>
+    <div id="interaction-log"></div>
+
+    <h2 style="margin-top:20px;">核心流程</h2>
+    <div style="font-size:12px;line-height:1.8;color:#b2bec3;">
+      <div>① 登录 → Onboarding → 首页</div>
+      <div>② 快捷分类 / FAB → 记一笔 → 反馈</div>
+      <div>③ 报表图例 → 明细 → 编辑</div>
+      <div>④ 图例长按 → 预算设置</div>
+      <div>⑤ 洞察 → 优惠券 / Inbox / AI</div>
+      <div>⑥ 工具 → 计算 → 固定收支</div>
+      <div>⑦ 家庭邀请 → 汇总</div>
+    </div>
+  </aside>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
